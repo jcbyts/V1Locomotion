@@ -1,2 +1,5 @@
 # V1Locomotion
-Analyses for Liska et al., 2022
+
+This repo houses the analysis and figure code for Liska et al., 2022. 
+
+
