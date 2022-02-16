@@ -9,10 +9,14 @@ defopts.spike_rate_thresh = 1;
 defopts.ndim = 5;
 defopts.plot = false;
 defopts.normalization = 'minmax';
+defopts.randomize_folds = false;
+defopts.folds = 5;
 
 if nargin < 3
     opts = struct();
 end
+
+rng(1)
 
 opts = mergeStruct(defopts, opts);
 
@@ -51,6 +55,10 @@ r = r(:,clist);
 cids = mean(r) ./ opts.winsize > opts.spike_rate_thresh;
 r = r(:,cids);
 
+goodix = sum(r,2)~=0 & ~isnan(runningspeed); % trials where at least 1 neuron spiked and runing speed is valid
+r = r(goodix,:);
+runningspeed = runningspeed(goodix);
+
 NC = size(r,2);
 S.cids = clist(cids)-1;
 
@@ -64,15 +72,45 @@ end
 S.robs = r;
 
 % pca on spikes
-C = cov(r);
-[u,~] = svd(C);
+[coeff, ~] = pca(r);
+coeff = coeff .* sign(sum(sign(coeff))); % sign is irrelevant for PCA, but we care because if most of the units have negative loadings that is meaningful
+score = (r-mean(r))*coeff;
+% C = cov(r);
+% [u,~] = svd(C);
+% rpc = r*u(:,1:opts.ndim).*sign(sum(u(:,1:opts.ndim)));
+% rpc = r*u(:,1:opts.ndim);
+% rpc = (rpc - min(rpc)) ./ range(rpc); % normalize
 
-rpc = r*u(:,1:opts.ndim).*sign(sum(u(:,1:opts.ndim)));
-rpc = (rpc - min(rpc)) ./ range(rpc); % normalize
+rpc = score(:,1:opts.ndim);
 
 iix = ~isnan(runningspeed);
 [rho, pval] = corr(rpc(iix,:), runningspeed(iix), 'Type', 'Spearman');
 
+nt = numel(runningspeed);
+
+
+xidxs = xvalidationIdx(nt, opts.folds, opts.randomize_folds);
+yhat = nan(nt,1);
+
+what = nan(size(r,2)+1,opts.folds);
+for i = 1:opts.folds
+    xtrain = r(xidxs{i,1},:);
+    ytrain = runningspeed(xidxs{i,1});
+    xtest = r(xidxs{i,2},:);
+    [what(:,i), ~, outfun] = outputNonlinLs(xtrain,ytrain, struct('display', 'off'));
+    yhat(xidxs{i,2}) = outfun(xtest*what(2:end,i) + what(1,i));
+end
+
+figure(1); clf
+plot(runningspeed, 'k'); hold on
+plot(yhat, 'r')
+
+S.pc_coeffs = coeff(:,1:opts.ndim);
+S.decoding_r2 = rsquared(runningspeed, yhat);
+S.decoding_folds = opts.folds;
+S.decoding_beta = what;
+S.decoding_fun = outfun;
+S.decoding_runspeed = yhat;
 S.rpc = rpc;
 S.runningspeed = runningspeed;
 S.rho = rho;

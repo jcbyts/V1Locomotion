@@ -75,10 +75,10 @@ while true
 
     step = SSfull0 - SSfull;
     SSfull0 = SSfull;
-    fprintf("Step %d, %02.5f\n", iter, step)
     if step < steptol || iter > 5
         break
     end
+    fprintf("Step %d, %02.5f\n", iter, step)
     iter = iter + 1;
     Bfull = Bfull0;
     g1 = g0;

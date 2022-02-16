@@ -11,12 +11,22 @@ if nargin < 1
     subj = 'gru';
 end
 
-validSubjs = {'gru', 'brie', 'allen'};
+validSubjs = {'gru', 'brie', 'allen', 'marmoset', 'mouse'};
 assert(ismember(subj,validSubjs), sprintf("import_supersession: subj name %s is not valid", subj))
 
-
-fname = fullfile(fpath, [subj 'D_all.mat']);
-D = load(fname);
+if strcmp(subj, 'marmoset')
+    fname = fullfile(fpath, 'gruD_all.mat');
+    D = load(fname);
+    fname = fullfile(fpath, 'brieD_all.mat');
+    D_ = load(fname);
+    D = combineUniqueSessions(D,D_);
+elseif strcmp(subj, 'mouse')
+    fname = fullfile(fpath, 'allenD_all.mat');
+    D = load(fname);
+else
+    fname = fullfile(fpath, [subj 'D_all.mat']);
+    D = load(fname);
+end
 
 sessions = unique(D.sessNumSpikes);
 Nsess = numel(sessions);

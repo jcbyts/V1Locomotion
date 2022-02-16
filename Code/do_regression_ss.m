@@ -1,4 +1,4 @@
-function do_regression_ss(Stim, D, cid, fout)
+function do_regression_ss(D, cid, fout)
 
 fname = fullfile(fout, sprintf('%s_%d.mat', D.subj, cid));
 
@@ -6,61 +6,34 @@ if exist(fname, 'file')
     return
 end
 
+
 try
-    iix = D.spikeIds == cid;
+    
+    [Stim, Robs] = bin_spikes_as_trials(D, cid, 'plot', true, 'binsize', 1/60, 'win', [-.2, .2]);
 
-    st = D.spikeTimes(iix);
-
-    trialidx = find(Stim.grating_onsets > min(st) & Stim.grating_onsets < max(st));
-
-
-    sp = struct('spikeTimes', st, 'spikeIds', ones(size(st)));
-    Robs = bin_spikes_at_frames(Stim, sp, 0, trialidx);
-
-    if (mean(Robs) / Stim.bin_size) < 1
+    if (mean(Robs(:)) / Stim.bin_size) < 1
         return
     end
-
-    NC = size(Robs,2);
-    U = eye(NC);
-    cc = 0;
 
     opts = struct();
     folds = 5;
     opts.use_spikes_for_dfs = false;
     opts.folds = folds;
-    opts.trialidx = trialidx;
+    opts.trialidx = (1:numel(Stim.grating_onsets))';
+    opts.truetrialidx = Stim.trial_list;
     opts.spike_smooth = 5;
 
     Robs = filtfilt(ones(opts.spike_smooth,1)/opts.spike_smooth, 1, Robs);
-    %% get data filters
-    if opts.use_spikes_for_dfs
-
-        Rt = reshape(Robs, numel(Stim.trial_time), [], NC);
-        figure(1); clf;
-        plot(squeeze(sum(sum(Rt,2),1)), sum(Robs), '.'); hold on; plot(xlim, xlim, 'k')
-
-        Rt = squeeze(sum(Rt));
-
-        dfs = false(numel(Stim.trial_time), numel(Stim.grating_onsets), NC);
-        dfsTrials = false(numel(Stim.grating_onsets), NC);
-        for cc = 1:NC
-            iix = getStableRange(imboxfilt(Rt(:,cc), 25));
-            dfsTrials(iix,cc) = true;
-            dfs(:,iix,cc) = true;
-            drawnow
-        end
-
-        dfs = reshape(dfs, [], NC);
-    end
-
+    Robs = Robs(:);
+    NC = 1;
+    
     %% build the design matrix components
     % build design matrix
     assert(Stim.bin_size==1/60, 'Parameters have only been set for 60Hz sampling')
     opts.collapse_speed = true;
     opts.collapse_phase = true;
     opts.include_onset = false;
-    opts.stim_dur = median(D.GratingOffsets-D.GratingOnsets) + 0.2; % length of stimulus kernel
+    opts.stim_dur = median(D.GratingOffsets(opts.trialidx)-D.GratingOnsets(opts.trialidx)) + 0.2; % length of stimulus kernel
     opts.use_sf_tents = false;
 
     stim_dur = ceil((opts.stim_dur)/Stim.bin_size);
@@ -144,9 +117,13 @@ try
     Rpred_indiv.data = struct();
 
     % try different models
-    modelNames = {'nostim', 'stim', 'stimsac', 'stimrun', 'stimrunsac', 'drift'};
+%     modelNames = {'nostim', 'stim', 'stimsac', 'stimrun', 'stimrunsac', 'drift'};
+%     excludeParams = { {'Stim', 'Stim Onset'}, {'Running', 'Saccade'}, {'Running'}, {'Saccade'}, {}, {'Stim','Stim Onset','Running','Saccade'} };
+%     alwaysExclude = {'Stim R', 'Stim S', 'Is Running', 'Is Pupil'};
 
-    excludeParams = { {'Stim', 'Stim Onset'}, {'Running', 'Saccade'}, {'Running'}, {'Saccade'}, {}, {'Stim','Stim Onset','Running','Saccade'} };
+
+    modelNames = {'nostim', 'stimsac', 'stimrunsac'};
+    excludeParams = { {'Stim', 'Stim Onset'}, {'Running'}, {'Saccade'}, {}};
     alwaysExclude = {'Stim R', 'Stim S', 'Is Running', 'Is Pupil'};
 
     % models2fit = {'drift', 'stim'};
@@ -155,10 +132,6 @@ try
     Ntotal = size(Robs,1);
     Rpred_indiv.data.indices = false(Ntotal, NC);
     Rpred_indiv.data.Robs = Robs;
-    Rpred_indiv.data.gdrive = nan(Ntotal,NC);
-    Rpred_indiv.data.Rpred = nan(Ntotal,NC)';
-    Rpred_indiv.data.Gain = nan(2,NC);
-    Rpred_indiv.data.Ridge = nan(1,NC);
 
     for iModel = find(ismember(modelNames, models2fit))
         Rpred_indiv.(modelNames{iModel}).Rpred = nan(Ntotal,NC)';
@@ -170,9 +143,14 @@ try
     end
 
     % Fit Gain models for running and pupil
-    GrestLabels = [{'Stim Onset'}    {'Drift'}    {'Saccade'}    {'Running'}];
-    GainModelNames = {'RunningGain', 'PupilGain'}; %{'nostim', 'stim', 'stimsac', 'stimrun', 'stimrunsac'};
-    GainTerm = {'Is Running', 'Is Pupil'};
+    GrestLabels = [{'Stim Onset'}    {'Drift'}    {'Saccade'}];
+    
+    GainModelNames = {'RunningGain', ...
+        'PupilGain', ...
+        'DriftGain'};
+    GainTerm = {'Is Running',...
+        'Is Pupil',...
+        'Drift'};
 
     for iModel = 1:numel(GainTerm)
 
@@ -183,11 +161,12 @@ try
 
         Rpred_indiv.(GainModelNames{iModel}).covIdx = covIdx;
         Rpred_indiv.(GainModelNames{iModel}).Beta = cell(folds,1);
-        Rpred_indiv.(GainModelNames{iModel}).Offset = zeros(folds, NC);
-        Rpred_indiv.(GainModelNames{iModel}).Gains = zeros(folds, 2, NC);
+        Rpred_indiv.(GainModelNames{iModel}).Offset = nan(folds, NC);
+        Rpred_indiv.(GainModelNames{iModel}).Gains = nan(folds, 2, NC);
         Rpred_indiv.(GainModelNames{iModel}).Labels = covLabels;
-        Rpred_indiv.(GainModelNames{iModel}).Rpred = zeros(NC, Ntotal);
-        Rpred_indiv.(GainModelNames{iModel}).Ridge = zeros(folds, NC);
+        Rpred_indiv.(GainModelNames{iModel}).Rpred = nan(NC, Ntotal);
+        Rpred_indiv.(GainModelNames{iModel}).Gdrive = nan(NC, Ntotal);
+        Rpred_indiv.(GainModelNames{iModel}).Ridge = nan(folds, NC);
         Rpred_indiv.(GainModelNames{iModel}).Rsquared = nan(1,NC);
         Rpred_indiv.(GainModelNames{iModel}).CC = nan(1,NC);
 
@@ -197,121 +176,109 @@ try
         end
     end
 
-    for cc = 1:NC
+   
 
-        tread_speed = reshape(Stim.tread_speed(:,opts.trialidx), [], 1);
-        good_inds = find(~isnan(tread_speed));
-        tread_speed = tread_speed(good_inds);
+    tread_speed = reshape(Stim.tread_speed(:,opts.trialidx), [], 1);
+    good_inds = find(~isnan(tread_speed));
+    tread_speed = tread_speed(good_inds);
 
-        restLabels = [{'Stim Onset'}    {'Drift'}];
-        Lgain = nan;
-        Lfull = nan;
-        X = fullR(good_inds,:);
-        [Betas, Gain, Ridge, Rhat, ~, ~, gdrive] = AltLeastSqGainModel(X, Robs(good_inds,cc), 1:size(X,1), ...
-            regIdx, regLabels, {'Stim'}, 'Drift', restLabels, Lgain, Lfull);
+    % Build cv indices that are trial-based
+    Rpred_indiv.data.indices(good_inds) = true;
 
+    good_trials = (1:numel(Stim.grating_onsets))';  %find(dfsTrials(:,cc));
+    num_trials = numel(good_trials);
 
-        figure(3); clf
-        plot(Robs(good_inds,cc), 'k'); hold on
-        plot(Rhat, 'r', 'Linewidth', 1)
-        plot(gdrive./max(gdrive)*max(Rhat), 'g', 'Linewidth', 2)
-        plot(gdrive > prctile(gdrive, 75)/2, 'b', 'Linewidth', 2)
-        plot(tread_speed ./ max(tread_speed) * max(Rhat), 'c')
-        df = gdrive > prctile(gdrive, 75)/2;
+    folds = 5;
+    n = numel(Stim.trial_time);
+    T = size(Robs,1);
 
-        Rpred_indiv.data.gdrive(good_inds,cc) = gdrive;
-        Rpred_indiv.data.Rpred(cc,good_inds) = Rhat;
-        Rpred_indiv.data.Ridge(cc) = Ridge;
-        Rpred_indiv.data.Gain(:,cc) = Gain;
+    dataIdxs = true(folds, T);
+    rng(1)
 
-        % Build cv indices that are trial-based
-        good_inds = intersect(good_inds, find(df));
+    trorder = randperm(num_trials);
 
-        Rpred_indiv.data.indices(good_inds,cc) = true;
-
-        good_trials = (1:numel(Stim.grating_onsets))';  %find(dfsTrials(:,cc));
-        num_trials = numel(good_trials);
-
-        folds = 5;
-        n = numel(Stim.trial_time);
-        T = size(Robs,1);
-
-        dataIdxs = true(folds, T);
-        rng(1)
-
-        trorder = randperm(num_trials);
-
-        for t = 1:(num_trials)
-            i = mod(t, folds);
-            if i == 0, i = folds; end
-            dataIdxs(i,(good_trials(trorder(t))-1)*n + (1:n)) = false;
-        end
-
-        % good_inds = intersect(good_inds, find(sum(dataIdxs)==(folds-1)));
-        fprintf('%d good samples\n', numel(good_inds))
-        plot(good_inds, ones(numel(good_inds),1), '.')
-
-
-        R = Robs(good_inds,cc);
-        X = fullR(good_inds,:);
-
-        figure(1); clf
-        plot(Robs(:,cc), 'k'); hold on
-
-        for iModel = find(ismember(modelNames, models2fit))
-
-            fprintf('Fitting Model [%s]\n', modelNames{iModel})
-
-            exclude = [excludeParams{iModel} alwaysExclude];
-            modelLabels = setdiff(regLabels, exclude); %#ok<*NASGU>
-            %     evalc("[Vfull, fullBeta, ~, fullIdx, fullRidge, fullLabels] = crossValModel(fullR(good_inds,:), Robs(good_inds,:)', modelLabels, regIdx, regLabels, folds, dataIdxs);");
-            % dataIdxs(:,df)
-
-            [Vfull, fullBeta, ~, fullIdx, fullRidge, fullLabels] = crossValModel(X, R', modelLabels, regIdx, regLabels, folds, dataIdxs(:,good_inds));
-
-            Rpred_indiv.(modelNames{iModel}).covIdx = fullIdx;
-            Rpred_indiv.(modelNames{iModel}).Labels = fullLabels;
-            Rpred_indiv.(modelNames{iModel}).Rpred(cc,good_inds) = Vfull;
-            Rpred_indiv.(modelNames{iModel}).Offset(:,cc) = cellfun(@(x) x(1), fullBeta(:));
-            for i = 1:numel(fullBeta)
-                fullBeta{i}(1) = [];
-                Rpred_indiv.(modelNames{iModel}).Beta{i}(:,cc) = fullBeta{i}; %#ok<*NODEF>
-            end
-
-            Rpred_indiv.(modelNames{iModel}).Ridge(cc) = fullRidge;
-            Rpred_indiv.(modelNames{iModel}).Rsquared(cc) = rsquared(R, Vfull'); %compute explained variance
-            Rpred_indiv.(modelNames{iModel}).CC(cc) = corr(R, Vfull'); %modelCorr(R,Vfull,1); %compute explained variance
-        end
-
-
-
-        Lgain = nan;
-        Lfull = nan;
-
-        for iModel = 1:numel(GainTerm)
-            for ifold = 1:folds
-                train_inds = find(dataIdxs(ifold,good_inds))';
-                test_inds = find(~dataIdxs(ifold,good_inds))';
-
-                %             evalc("[Betas, Gain, Ridge, Rhat, Lgain, Lfull] = AltLeastSqGainModel(fullR(good_inds,:), Robs(good_inds,cc), train_inds, regIdx, regLabels, {'Stim'}, GainTerm(iModel), restLabels, Lgain, Lfull);");
-                [Betas, Gain, Ridge, Rhat, Lgain, Lfull] = AltLeastSqGainModel(X, R, train_inds, regIdx, regLabels, {'Stim'}, GainTerm(iModel), GrestLabels, Lgain, Lfull);
-
-                Rpred_indiv.(GainModelNames{iModel}).Offset(ifold,cc) = Betas(1);
-                Rpred_indiv.(GainModelNames{iModel}).Beta{ifold}(:,cc) = Betas(2:end);
-                Rpred_indiv.(GainModelNames{iModel}).Gains(ifold,:,cc) = Gain;
-                Rpred_indiv.(GainModelNames{iModel}).Ridge(ifold,cc) = Ridge;
-                Rpred_indiv.(GainModelNames{iModel}).Rpred(cc,good_inds(test_inds)) = Rhat(test_inds);
-            end
-            % evaluate model
-            Rpred_indiv.(GainModelNames{iModel}).Rsquared(cc) = rsquared(R, Rpred_indiv.(GainModelNames{iModel}).Rpred(cc,good_inds)'); %compute explained variance
-            Rpred_indiv.(GainModelNames{iModel}).CC(cc) = corr(R, Rpred_indiv.(GainModelNames{iModel}).Rpred(cc,good_inds)'); %compute explained variance
-            fprintf('Done\n')
-        end
-
-        %     drawnow
+    for t = 1:(num_trials)
+        i = mod(t, folds);
+        if i == 0, i = folds; end
+        dataIdxs(i,(good_trials(trorder(t))-1)*n + (1:n)) = false;
     end
 
+    % good_inds = intersect(good_inds, find(sum(dataIdxs)==(folds-1)));
+    fprintf('%d good samples\n', numel(good_inds))
 
-    save(fname, '-v7.3', 'Rpred_indiv', 'opts')
+    R = Robs(good_inds);
+    X = fullR(good_inds,:);
+
+    for iModel = find(ismember(modelNames, models2fit))
+
+        fprintf('Fitting Model [%s]\n', modelNames{iModel})
+
+        exclude = [excludeParams{iModel} alwaysExclude];
+        modelLabels = setdiff(regLabels, exclude); %#ok<*NASGU>
+        %     evalc("[Vfull, fullBeta, ~, fullIdx, fullRidge, fullLabels] = crossValModel(fullR(good_inds,:), Robs(good_inds,:)', modelLabels, regIdx, regLabels, folds, dataIdxs);");
+        % dataIdxs(:,df)
+
+        [Vfull, fullBeta, ~, fullIdx, fullRidge, fullLabels] = crossValModel(X, R', modelLabels, regIdx, regLabels, folds, dataIdxs(:,good_inds));
+
+        Rpred_indiv.(modelNames{iModel}).covIdx = fullIdx;
+        Rpred_indiv.(modelNames{iModel}).Labels = fullLabels;
+        Rpred_indiv.(modelNames{iModel}).Rpred(good_inds) = Vfull;
+        Rpred_indiv.(modelNames{iModel}).Offset = cellfun(@(x) x(1), fullBeta(:));
+        for i = 1:numel(fullBeta)
+            fullBeta{i}(1) = [];
+            Rpred_indiv.(modelNames{iModel}).Beta{i} = fullBeta{i}; %#ok<*NODEF>
+        end
+
+        Rpred_indiv.(modelNames{iModel}).Ridge = fullRidge;
+        Rpred_indiv.(modelNames{iModel}).Rsquared = rsquared(R, Vfull'); %compute explained variance
+        [Rpred_indiv.(modelNames{iModel}).CC, Rpred_indiv.(modelNames{iModel}).CCpval] = corr(R, Vfull'); %modelCorr(R,Vfull,1); %compute explained variance
+    end
+
+    Lgain = nan;
+    Lfull = nan;
+
+    for iModel = 1:numel(GainTerm)
+        for ifold = 1:folds
+            train_inds = find(dataIdxs(ifold,good_inds))';
+            test_inds = find(~dataIdxs(ifold,good_inds))';
+
+            %             evalc("[Betas, Gain, Ridge, Rhat, Lgain, Lfull] = AltLeastSqGainModel(fullR(good_inds,:), Robs(good_inds,cc), train_inds, regIdx, regLabels, {'Stim'}, GainTerm(iModel), restLabels, Lgain, Lfull);");
+            [Betas, Gain, Ridge, Rhat, Lgain, Lfull, gdrive] = AltLeastSqGainModel(X, R, train_inds, regIdx, regLabels, {'Stim'}, GainTerm(iModel), GrestLabels, Lgain, Lfull);
+
+            Rpred_indiv.(GainModelNames{iModel}).Offset(ifold) = Betas(1);
+            Rpred_indiv.(GainModelNames{iModel}).Beta{ifold} = Betas(2:end);
+            Rpred_indiv.(GainModelNames{iModel}).Gains(ifold,:) = Gain;
+            Rpred_indiv.(GainModelNames{iModel}).Ridge(ifold) = Ridge;
+            Rpred_indiv.(GainModelNames{iModel}).Rpred(good_inds(test_inds)) = Rhat(test_inds);
+            Rpred_indiv.(GainModelNames{iModel}).Gdrive(good_inds(test_inds)) = gdrive(test_inds);
+        end
+        % evaluate model
+        Rpred_indiv.(GainModelNames{iModel}).Rsquared = rsquared(R, Rpred_indiv.(GainModelNames{iModel}).Rpred(good_inds)'); %compute explained variance
+        [Rpred_indiv.(GainModelNames{iModel}).CC,Rpred_indiv.(GainModelNames{iModel}).CCpval]  = corr(R, Rpred_indiv.(GainModelNames{iModel}).Rpred(good_inds)'); %compute explained variance
+        fprintf('Done\n')
+    end
+
+        %     drawnow
+
+
+%     save(fname, '-v7.3', 'Rpred_indiv', 'opts')
 
 end
+
+%%
+iix = Rpred_indiv.data.indices;
+figure(1); clf
+
+models2compare = {'stimsac', 'stimrunsac', 'RunningGain', 'DriftGain', 'PupilGain'};
+nmodels = numel(models2compare);
+for imodel = 1:nmodels
+    subplot(nmodels, 1, imodel)
+modelname = models2compare{imodel};
+plot(Rpred_indiv.data.Robs(iix), 'k'); hold on
+plot(Rpred_indiv.(modelname).Rpred(iix), 'r')
+if isfield(Rpred_indiv.(modelname), 'Gdrive')
+    plot(Rpred_indiv.(modelname).Gdrive(iix), 'g')
+end
+title(sprintf('%s: r2:%02.3f, rho:%02.3f', modelname, Rpred_indiv.(modelname).Rsquared, Rpred_indiv.(modelname).CC))
+end
+

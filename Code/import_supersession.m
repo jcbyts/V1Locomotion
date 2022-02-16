@@ -34,7 +34,14 @@ fprintf('Loading and aligning spikes with behavior\n')
 
 unique_sessions = {'gru_20211217', 'allen'}; % sessions for which the unit numbers should not be combined
 
-flist = dir(fullfile(fpath, [subj '*']));
+if strcmp(subj, 'marmosets') % combine marmosets: not implemented yet
+    subj = 'gru';
+    flist = dir(fullfile(fpath, [subj '*']));
+    subj = 'brie';
+    flist = [flist; dir(fullfile(fpath, [subj '*']))];
+else
+    flist = dir(fullfile(fpath, [subj '*']));
+end
 startTime = 0; % all experiments start at zero. this number will increment as we concatenate sessions
 newOffset = 0;
 timingFields = {'GratingOnsets', 'GratingOffsets', 'spikeTimes', 'treadTime', 'eyeTime', 'frameTimes'};

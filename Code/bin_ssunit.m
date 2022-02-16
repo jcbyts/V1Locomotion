@@ -7,7 +7,7 @@ function [stim, robs, behavior, opts] = bin_ssunit(D, unitId, varargin)
 % OUTPUTS:
 %   stim:      {StimDir, StimSpeed, StimFreq};
 %   robs:      Binned spikes;
-%   behavior:  {runSpeed, GratPhase, PupilArea};
+%   behavior:  {runSpeed, GratPhase, PupilArea, Fixations};
 %   opts:      the parameters of the analysis
 %
 % Optional Arguments:
@@ -33,6 +33,7 @@ end
 sessNums = unique(D.sessNumSpikes(unitIx));
 
 ix = ismember(D.sessNumGratings, sessNums);
+trial_ix = find(ix);
 
 StimOnset  = D.GratingOnsets(ix);
 StimOffset = D.GratingOffsets(ix);
@@ -56,11 +57,14 @@ newFrameTime = newTreadTime;
 newFramePhase = interp1(frameTime, framePhase, newFrameTime);
 
 pupil = nan(size(newFrameTime));
+fixations = nan(size(pupil));
 eyeIx = ismember(D.sessNumEye, sessNums) & ~isnan(D.eyePos(:,3));
 eyeTime = D.eyeTime(eyeIx);
 eyePupil = D.eyePos(eyeIx,3);
+eyeLabel = double(D.eyeLabels(eyeIx)==1);
 if ~isempty(eyePupil)
     pupil = interp1(eyeTime,eyePupil,newFrameTime);
+    fixations = interp1(eyeTime, eyeLabel, newFrameTime);
 end
 
 treadTime = newTreadTime;
@@ -100,6 +104,7 @@ opts.NLags = nbins;
 runSpeed = nan(NT, nbins);
 GratPhase = nan(NT, nbins);
 PupilArea = nan(NT, nbins);
+Fixations = nan(NT, nbins);
 nt = numel(treadSpeed);
 
 for i = 1:NT
@@ -108,6 +113,7 @@ for i = 1:NT
     runSpeed(i,valid) = treadSpeed(iix(valid));
     GratPhase(i,valid) = framePhase(iix(valid));
     PupilArea(i,valid) = pupil(iix(valid));
+    Fixations(i,valid) = fixations(iix(valid));
 end
 
 SpikeTimes = D.spikeTimes(unitIx);
@@ -142,7 +148,6 @@ if plotDuringImport
         plot.raster(bins(j), iTrial, 1);
     end
     
-    
     drawnow
 end
 
@@ -155,6 +160,9 @@ end
 % output
 stim = {StimDir, StimSpeed, StimFreq};
 robs = scnt;
-behavior = {runSpeed, GratPhase, PupilArea};
+behavior = {runSpeed, GratPhase, PupilArea, Fixations};
 opts.lags = bins;
 opts.binsize = binsize;
+opts.postwin = ip.Results.win(2);
+opts.gratingonsets = StimOnset(validStim);
+opts.trialix = trial_ix(validStim);

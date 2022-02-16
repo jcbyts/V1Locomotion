@@ -10,6 +10,8 @@ function Stat = do_spike_count_analyses(D, opts)
 % defopts.nboot = 100;
 % defopts.spike_rate_thresh = 1;
 
+rng(1234) % for reproducibility
+
 if nargin < 2
     opts = struct();
 end
@@ -53,9 +55,7 @@ Stat.frPrefS = nan(NC, 3);
 
 % Tuning curves, PSTHS 
 total_directions = unique(D.GratingDirections(~isnan(D.GratingDirections)));
-total_orientations = unique(mod(total_directions, 180));
 num_directions = numel(total_directions);
-num_orientations = numel(total_orientations);
 
 Stat.meanrate = nan(NC,1); % mean firing rate
 Stat.baselinerate = nan(NC,1);
@@ -74,19 +74,6 @@ Stat.drateweight = nan(NC,num_directions, 3); % direction tuning curve weighted 
 Stat.drateweightR = nan(NC,num_directions, 3); % direction tuning curve weighted by TF / SF tuning
 Stat.drateweightS = nan(NC,num_directions, 3); % direction tuning curve weighted by TF / SF tuning
 
-Stat.orientations = total_orientations; % orientations
-Stat.oratemarg = nan(NC,num_orientations, 3); % orientation
-Stat.oratemargR = nan(NC,num_orientations, 3); % orientation
-Stat.oratemargS = nan(NC,num_orientations, 3); % orientation
-
-Stat.oratebest = nan(NC,num_orientations, 3);
-Stat.oratebestR = nan(NC,num_orientations, 3);
-Stat.oratebestS = nan(NC,num_orientations, 3);
-
-Stat.orateweight = nan(NC,num_orientations, 3);
-Stat.orateweightR = nan(NC,num_orientations, 3);
-Stat.orateweightS = nan(NC,num_orientations, 3);
-
 Stat.robs = cell(NC, 1);
 Stat.runningspeed = cell(NC, 1);
 
@@ -96,6 +83,10 @@ Stat.runrhop = nan(NC,1);
 
 Stat.rfecc = nan(NC,1);
 Stat.rfsig = nan(NC,1);
+
+Stat.prctilerunbootmarg = nan(NC, 1);
+Stat.prctilerunbootbest = nan(NC, 1);
+Stat.prctilerunbootweight = nan(NC, 1);
 
 for cc = 1:NC
 
@@ -169,18 +160,15 @@ for cc = 1:NC
 
     % get conditions
     direction = stimconds{1};
-    orientation = mod(direction, 180);
     speed = stimconds{2};
     freq = stimconds{3};
 
     speeds = unique(speed(:))';
     freqs = unique(freq(:))';
     directions = unique(direction(:))';
-    orientations = unique(orientation(:))';
 
     % bin all conditions
     Dmat = direction == directions;
-    Omat = orientation == orientations;
     Fmat = freq == freqs;
     Smat = speed == speeds;
 
@@ -188,13 +176,10 @@ for cc = 1:NC
     nf = numel(freqs);
     ns = numel(speeds);
     nt = numel(R);
-    no = numel(orientations);
     Xbig = zeros(nt, nd, nf, ns);
-    XbigO = zeros(nt, no, nf, ns);
     for iis = 1:ns
         for iif = 1:nf
             Xbig(:,:,iif,iis) = Dmat .* Fmat(:,iif) .* Smat(:,iis);
-            XbigO(:,:,iif,iis) = Omat .* Fmat(:,iif) .* Smat(:,iis);
         end
     end
 
@@ -205,7 +190,7 @@ for cc = 1:NC
     Stat.robs{cc} = R;
     Stat.runningspeed{cc} = runspeed;
 
-    ix = ~isnan(runspeed);
+    ix = runspeed > 0;
     [rho, pval] = corr(R(ix), runspeed(ix), 'Type', 'Spearman');
     Stat.runrho(cc) = rho;
     Stat.runrhop(cc) = pval;
@@ -236,7 +221,7 @@ for cc = 1:NC
     % --- direction marginalize over TF/SF (Running)
     direc_ix = ismember(total_directions, directions);
 
-    % --- compute a null distribution of differences
+    % --- tuning curve ignoring running condition
     X = Dmat;
     x = X.*R;
     % bootstrap errorbars
@@ -246,11 +231,10 @@ for cc = 1:NC
     ci = prctile(a, [2.5 50 97.5]);
     Stat.dratemarg(cc,direc_ix,:) = ci';
     
-    
-    % bootstrapped null hypothesis test by shuffling 
+    % bootstrapped null hypothesis test by shuffling running condition
     isgood = runix | statix; % get trials that didn't have negative or dropped treadmill data
-    [~, prefstim] = max(ci(2,:)); % preferred stimulus condition
-    prefix = Dmat(:,prefstim)>0 & isgood; % index into the preferred direction
+    [~, mxid] = max(ci(2,:)); % preferred stimulus condition
+    prefix = Dmat(:,mxid)>0 & isgood; % index into the preferred direction
 
     rpref = R(prefix);
     isrun = runix(prefix);
@@ -259,29 +243,10 @@ for cc = 1:NC
     nulldiff = mean(rpref(randi(npref, [sum(isrun) opts.nboot]))) - ...
         mean(rpref(randi(npref, [sum(~isrun) opts.nboot])));
     truediff = mean(rpref(isrun)) - mean(rpref(~isrun));
-    pdiff = mean(truediff > nulldiff); % fraction of null differences the true difference is greater than
-
-    figure(1); clf
-    histogram(nulldiff, 50); hold on
+    Stat.prctilerunbootmarg(cc) =  mean(truediff > nulldiff); % fraction of null differences the true difference is greater than
 
     
-    ci95 = prctile(nulldiff, [2.5 97.5]);
-    
-    plot(truediff*[1 1], ylim, 'k')
-    plot([1; 1].*ci95, ([1; 1].*ylim)', 'r')
-
-    
-
-    
-    
-    % randomly sample trials
-    x = Dmat(:,prefstim).*(rand([size(Dmat,1), opts.nboot]) < runrate);
-    murun = (x'*R) ./ sum(x)';
-
-    X = Dmat(:,prefstim).*(rand([size(Dmat,1), opts.nboot]) < statrate);
-
-    
-
+    % --- direction marginalize over TF/SF (Running)
     X = Dmat.*runix;
     x = X.*R;
     % bootstrap errorbars
@@ -290,11 +255,6 @@ for cc = 1:NC
         squeeze(sum(reshape(X(bootix,:), [size(bootix) size(X,2)]),1));
     ci = prctile(a, [2.5 50 97.5]);
     Stat.dratemargR(cc,direc_ix,:) = ci';
-
-    if mean(statix) < mean(runix)
-        [~, mxid] = max(ci(2,:));
-    end
-
     
     % --- direction marginalize over TF/SF (Stationary)
     X = Dmat.*statix;
@@ -305,14 +265,7 @@ for cc = 1:NC
         squeeze(sum(reshape(X(bootix,:), [size(bootix) size(X,2)]),1));
     ci = prctile(a, [2.5 50 97.5]);
     Stat.dratemargS(cc,direc_ix,:) = ci';
-
-    if mean(statix) > mean(runix)
-        [~, mxid] = max(ci(2,:));
-    end
     
-%     figure(1); clf
-%     plot(directions, squeeze(Stat.dratemargR(cc,direc_ix,:)), 'r'); hold on
-%     plot(directions, squeeze(Stat.dratemargS(cc,direc_ix,:)), 'b');
 
     % --- running modulation at preferred direction (Allen Institute metric)
     Stat.ndir(cc,1) = sum(Dmat(:,mxid));
@@ -332,6 +285,7 @@ for cc = 1:NC
     % --- direction tuning at best SF / TF
     X = Xbig;
     x = X.*R;
+
     % bootstrap errorbars
     bootix = randi(size(x,1), [size(x,1) opts.nboot]);
     a = squeeze(sum(reshape(x(bootix,:), [size(bootix) size(X,2)]),1)) ./ ...
@@ -349,6 +303,21 @@ for cc = 1:NC
 
     Stat.dratebest(cc,direc_ix,:) = squeeze(Ici(:,mxid,:));
 
+    % null hypothesis test
+    [~, prefid] = max(mu);
+    prefix = X(:,prefid)>0 & isgood; % index into the preferred direction
+
+    rpref = R(prefix);
+    isrun = runix(prefix);
+    if (mean(isrun) > .1)
+
+        npref = numel(rpref);
+        nulldiff = mean(rpref(randi(npref, [sum(isrun) opts.nboot]))) - ...
+            mean(rpref(randi(npref, [sum(~isrun) opts.nboot])));
+        truediff = mean(rpref(isrun)) - mean(rpref(~isrun));
+        Stat.prctilerunbootbest(cc) =  mean(truediff > nulldiff); % fraction of null differences the true difference is greater than
+
+    end
 
     X = Xbig.*runix;
     x = X.*R;
@@ -374,9 +343,6 @@ for cc = 1:NC
 
     Stat.dratebestS(cc,direc_ix,:) = squeeze(Ici(:,mxid,:));
 
-%     figure(1); clf
-%     plot(directions, squeeze(Stat.dratebestR(cc,direc_ix,:)), 'r'); hold on
-%     plot(directions, squeeze(Stat.dratebestS(cc,direc_ix,:)), 'b');
 
     % get running modulation at best single stimulus
     [~, id] = max(ci(2,:));
@@ -396,8 +362,6 @@ for cc = 1:NC
     n = reshape(sum(Xbig), nd, []);
     
     Stat.ndir(cc,2) = sum(n(:,mxid));
-    
-%     [ii,jj] = find(I==max(I(:)));
     Stat.ndir(cc,3) = n(ii,mxid); % number of trials at best stimulus
 
     % --- direction tuning weighted by SF / TF tuning
@@ -411,6 +375,28 @@ for cc = 1:NC
     ci = prctile(a, [2.5 50 97.5]);
 
     Stat.drateweight(cc,direc_ix,:) = ci';
+    [~, mxid] = max(ci(2,:));
+
+    % null hypothesis test
+    prefix = X(:,mxid)>0 & isgood; % index into the preferred direction
+
+    rpref = R(prefix);
+    x = X(prefix, mxid);
+    isrun = runix(prefix);
+    if mean(isrun) > .1
+
+        npref = numel(rpref);
+        bootr = randi(npref, [sum(isrun) opts.nboot]);
+        boots = randi(npref, [sum(~isrun) opts.nboot]);
+
+        nulldiff = sum(x(bootr).*rpref(bootr)) ./ sum(x(bootr)) - ...
+            sum(x(boots).*rpref(boots)) ./ sum(x(boots));
+
+        truediff = ((x.*isrun)'*rpref) / sum(x.*isrun) - ...
+            ((x.*~isrun)'*rpref) / sum(x.*~isrun);
+
+        Stat.prctilerunbootweight(cc) =  mean(truediff > nulldiff); % fraction of null differences the true difference is greater than
+    end
 
     X = reshape(reshape(Xbig, nt*nd, [])*w, nt, nd);
     X = X.*runix;
@@ -432,145 +418,8 @@ for cc = 1:NC
 
     Stat.drateweightS(cc,direc_ix,:) = ci';
 
-    % ORIENTATION
-    XbigO = reshape(XbigO, nt, []);
-
-    % orientation, marginalized
-    X = Omat;
-    x = X.*R;
-    % bootstrap errorbars
-    bootix = randi(size(x,1), [size(x,1) opts.nboot]);
-    a = squeeze(sum(reshape(x(bootix,:), [size(bootix) size(X,2)]),1)) ./ ...
-        squeeze(sum(reshape(X(bootix,:), [size(bootix) size(X,2)]),1));
-    ci = prctile(a, [2.5 50 97.5]);
-
-    ori_ix = ismember(total_orientations, orientations);
-    Stat.oratemarg(cc,ori_ix,:) = ci';
-
-    % orientation, marginalized (Running)
-    X = Omat.*runix;
-    x = X.*R;
-    % bootstrap errorbars
-    bootix = randi(size(x,1), [size(x,1) opts.nboot]);
-    a = squeeze(sum(reshape(x(bootix,:), [size(bootix) size(X,2)]),1)) ./ ...
-        squeeze(sum(reshape(X(bootix,:), [size(bootix) size(X,2)]),1));
-    ci = prctile(a, [2.5 50 97.5]);
-
-    ori_ix = ismember(total_orientations, orientations);
-    Stat.oratemargR(cc,ori_ix,:) = ci';
-
-    % orientation, marginalized (Stationary)
-    X = Omat.*statix;
-    x = X.*R;
-    % bootstrap errorbars
-    bootix = randi(size(x,1), [size(x,1) opts.nboot]);
-    a = squeeze(sum(reshape(x(bootix,:), [size(bootix) size(X,2)]),1)) ./ ...
-        squeeze(sum(reshape(X(bootix,:), [size(bootix) size(X,2)]),1));
-    ci = prctile(a, [2.5 50 97.5]);
-
-    ori_ix = ismember(total_orientations, orientations);
-    Stat.oratemargR(cc,ori_ix,:) = ci';
-    
-    % --- orientation tuning, best SF / TF (Running)
-
-    X = XbigO.*runix;
-    x = X.*R;
-    % bootstrap errorbars
-    bootix = randi(size(x,1), [size(x,1) opts.nboot]);
-    a = squeeze(sum(reshape(x(bootix,:), [size(bootix) size(X,2)]),1)) ./ ...
-        squeeze(sum(reshape(X(bootix,:), [size(bootix) size(X,2)]),1));
-    ci = prctile(a, [2.5 50 97.5]);
-
-    Ici = reshape(ci', no, [], 3);
-
-    Stat.oratebestR(cc,ori_ix,:) = squeeze(Ici(:,mxid,:));
-    
-    % orientation tuning, best SF / TF (Running)
-
-    X = XbigO.*statix;
-    x = X.*R;
-    % bootstrap errorbars
-    bootix = randi(size(x,1), [size(x,1) opts.nboot]);
-    a = squeeze(sum(reshape(x(bootix,:), [size(bootix) size(X,2)]),1)) ./ ...
-        squeeze(sum(reshape(X(bootix,:), [size(bootix) size(X,2)]),1));
-    ci = prctile(a, [2.5 50 97.5]);
-
-    Ici = reshape(ci', no, [], 3);
-
-    Stat.oratebestS(cc,ori_ix,:) = squeeze(Ici(:,mxid,:));
-
-    % -- combine running and stationary
-    X = XbigO;
-    x = X.*R;
-
-    
-    % bootstrap errorbars
-    bootix = randi(size(x,1), [size(x,1) opts.nboot]);
-    a = squeeze(sum(reshape(x(bootix,:), [size(bootix) size(X,2)]),1)) ./ ...
-        squeeze(sum(reshape(X(bootix,:), [size(bootix) size(X,2)]),1));
-    ci = prctile(a, [2.5 50 97.5]);
-    mu = ci(2,:);
-    Ici = reshape(ci', no, [], 3);
-    I = reshape(mu, no, []);
-    Stat.oratebest(cc,ori_ix,:) = squeeze(Ici(:,mxid,:));
-
-    n = reshape(sum(XbigO), no, []);
-    
-    Stat.nori(cc,2) = sum(n(:,mxid));
-
-    [ii,jj] = find(I==max(I(:)));
-    if numel(ii)>1
-        [~, jj] = max(sum(I));
-        [~, ii] = max(I(:,jj));
-    end
-    Stat.nori(cc,3) = n(ii,jj); % number of trials at best stimulus
-    
-    % --- direction tuning weighted by SF / TF tuning
-    w = max(I)'; w = w ./ sum(w);
-    
-    X = reshape(reshape(XbigO, nt*no, [])*w, nt, no);
-    x = X.*R;
-    bootix = randi(size(x,1), [size(x,1) opts.nboot]);
-    a = squeeze(sum(reshape(x(bootix,:), [size(bootix) size(X,2)]),1)) ./ ...
-        squeeze(sum(reshape(X(bootix,:), [size(bootix) size(X,2)]),1));
-    ci = prctile(a, [2.5 50 97.5]);
-
-    Stat.orateweight(cc,ori_ix,:) = ci';
-
-    X = reshape(reshape(XbigO, nt*no, [])*w, nt, no);
-    X = X.*runix;
-    x = X.*R;
-    bootix = randi(size(x,1), [size(x,1) opts.nboot]);
-    a = squeeze(sum(reshape(x(bootix,:), [size(bootix) size(X,2)]),1)) ./ ...
-        squeeze(sum(reshape(X(bootix,:), [size(bootix) size(X,2)]),1));
-    ci = prctile(a, [2.5 50 97.5]);
-
-    Stat.orateweightR(cc,ori_ix,:) = ci';
-    
-    X = reshape(reshape(XbigO, nt*no, [])*w, nt, no);
-    X = X.*statix;
-    x = X.*R;
-    bootix = randi(size(x,1), [size(x,1) opts.nboot]);
-    a = squeeze(sum(reshape(x(bootix,:), [size(bootix) size(X,2)]),1)) ./ ...
-        squeeze(sum(reshape(X(bootix,:), [size(bootix) size(X,2)]),1));
-    ci = prctile(a, [2.5 50 97.5]);
-
-    Stat.orateweightS(cc,ori_ix,:) = ci';
-
-
-    
-    X = reshape(reshape(XbigO, nt*no, [])*w, nt, no);
-    X = X.*runix;
-    x = X.*R;
-    bootix = randi(size(x,1), [size(x,1) opts.nboot]);
-    a = squeeze(sum(reshape(x(bootix,:), [size(bootix) size(X,2)]),1)) ./ ...
-        squeeze(sum(reshape(X(bootix,:), [size(bootix) size(X,2)]),1));
-    ci = prctile(a, [2.5 50 97.5]);
-
-    Stat.orateweight(cc,ori_ix,:) = ci';
-
-    runTrials = find(runix); %find(runspeed > thresh);
-    statTrials = find(statix); %find(abs(runspeed) < 1);
+    runTrials = find(runix);
+    statTrials = find(statix);
 
     nrun = numel(runTrials);
     nstat = numel(statTrials);

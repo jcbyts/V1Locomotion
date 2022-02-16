@@ -89,7 +89,11 @@ end
 
 direction = Stim.direction(:);
 speed = Stim.speed_grating(:) .* stim_on;
-speedeye = speed + Stim.speed_eye(:) .* stim_on;
+if isfield(Stim, 'speed_eye')
+    speedeye = speed + Stim.speed_eye(:) .* stim_on;
+else
+    speedeye = speed;
+end
 
 opts.directions = unique(direction(stim_on));
 
@@ -112,8 +116,12 @@ end
 spd = tent_basis(speedeye, opts.spd_ctrs) .* stim_on;
 
 % figure(1); clf; plot(max(1- abs(circdiff((0:360)',phase_ctrs)/dph), 0))
+if isfield(Stim, 'phase_eye')
+    xphase = max( 1 - abs(circdiff(Stim.phase_eye(:) + Stim.phase_grating(:), opts.phase_ctrs)/opts.dph), 0);
+else
+    xphase = max( 1 - abs(circdiff(Stim.phase_grating(:), opts.phase_ctrs)/opts.dph), 0);
+end
 
-xphase = max( 1 - abs(circdiff(Stim.phase_eye(:) + Stim.phase_grating(:), opts.phase_ctrs)/opts.dph), 0);
 
 Xbig = zeros(NT, opts.nd, opts.nsf, opts.nphi, opts.nspd);
 for idir = 1:opts.nd
