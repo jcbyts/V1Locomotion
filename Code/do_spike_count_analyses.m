@@ -53,7 +53,7 @@ Stat.frStimS = nan(NC, 3);
 Stat.frPrefR = nan(NC, 3);
 Stat.frPrefS = nan(NC, 3);
 
-% Tuning curves, PSTHS 
+% Tuning curves 
 total_directions = unique(D.GratingDirections(~isnan(D.GratingDirections)));
 num_directions = numel(total_directions);
 
@@ -87,6 +87,11 @@ Stat.rfsig = nan(NC,1);
 Stat.prctilerunbootmarg = nan(NC, 1);
 Stat.prctilerunbootbest = nan(NC, 1);
 Stat.prctilerunbootweight = nan(NC, 1);
+
+Stat.bootTestMedianfrStim = nan(NC, 1);
+Stat.bootTestMeanfrStim = nan(NC, 1);
+Stat.bootTestMedianfrBase = nan(NC, 1);
+Stat.bootTestMeanfrBase = nan(NC, 1);
 
 for cc = 1:NC
 
@@ -154,8 +159,8 @@ for cc = 1:NC
 
     tix = unitopts.lags < 0 ;
     frbase = sum(robs(:,tix),2) ./ (sum(tix)*unitopts.binsize);
+    
     baseline = min(mean(robs(:,tix))) / unitopts.binsize;
-%     baseline = mean(frbase(frbase < R));
     Stat.baselinerate(cc) = baseline;
 
     % get conditions
@@ -238,13 +243,9 @@ for cc = 1:NC
 
     rpref = R(prefix);
     isrun = runix(prefix);
-    
-    npref = numel(rpref);
-    nulldiff = mean(rpref(randi(npref, [sum(isrun) opts.nboot]))) - ...
-        mean(rpref(randi(npref, [sum(~isrun) opts.nboot])));
-    truediff = mean(rpref(isrun)) - mean(rpref(~isrun));
-    Stat.prctilerunbootmarg(cc) =  mean(truediff > nulldiff); % fraction of null differences the true difference is greater than
 
+    [~, bstats] = boot_ttest(rpref(isrun), rpref(~isrun), @mean);
+    Stat.prctilerunbootmarg(cc) =  bstats.propgt; % fraction of null differences the true difference is greater than
     
     % --- direction marginalize over TF/SF (Running)
     X = Dmat.*runix;
@@ -310,13 +311,8 @@ for cc = 1:NC
     rpref = R(prefix);
     isrun = runix(prefix);
     if (mean(isrun) > .1)
-
-        npref = numel(rpref);
-        nulldiff = mean(rpref(randi(npref, [sum(isrun) opts.nboot]))) - ...
-            mean(rpref(randi(npref, [sum(~isrun) opts.nboot])));
-        truediff = mean(rpref(isrun)) - mean(rpref(~isrun));
-        Stat.prctilerunbootbest(cc) =  mean(truediff > nulldiff); % fraction of null differences the true difference is greater than
-
+      [~, bstats] = boot_ttest(rpref(isrun), rpref(~isrun), @mean);
+      Stat.prctilerunbootbest(cc) = bstats.propgt;
     end
 
     X = Xbig.*runix;
@@ -433,8 +429,17 @@ for cc = 1:NC
     Stat.frStimR(cc,:) = prctile(mean(R(runTrials(randi(nrun, [n opts.nboot])))), [2.5 50 97.5]);
     Stat.frStimS(cc,:) = prctile(mean(R(statTrials(randi(nstat, [n opts.nboot])))), [2.5 50 97.5]);
     
+    [~, bstats] = boot_ttest(frbase(runTrials), frbase(statTrials), @mean, opts.nboot);
+    Stat.bootTestMeanfrBase(cc) = bstats.propgt;
 
-    
+    [~, bstats] = boot_ttest(R(runTrials), R(statTrials), @mean, opts.nboot);
+    Stat.bootTestMeanfrStim(cc) = bstats.propgt;
+
+    [~, bstats] = boot_ttest(frbase(runTrials), frbase(statTrials), @median, opts.nboot);
+    Stat.bootTestMedianfrBase(cc) = bstats.propgt;
+
+    [~, bstats] = boot_ttest(R(runTrials), R(statTrials), @median, opts.nboot);
+    Stat.bootTestMedianfrStim(cc) = bstats.propgt;
 end
 
 

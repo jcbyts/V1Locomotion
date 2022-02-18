@@ -1,15 +1,13 @@
 
 %% paths
 fpath = getpref('FREEVIEWING', 'HUKLAB_DATASHARE');
-
+figdir = 'Figures/HuklabTreadmill/manuscript/';
 %% Basic summary of session running
 thresh = 1; % running threshold
 % subjects = {'gru', 'brie', 'allen'};
 
 subjects = {'mouse', 'marmoset'};
 nsubjs = numel(subjects);
-
-runfrac = cell(nsubjs,1);
 
 figure(1); clf
 
@@ -21,7 +19,7 @@ for isubj = 1:nsubjs
     
     subplot(nsubjs,1,isubj)
 
-    runix = D.treadSpeed > thresh;ls
+    runix = D.treadSpeed > thresh;
     histogram(D.treadSpeed(runix), 'binEdges', linspace(-10, 100, 100), 'FaceColor', cmap(6,:), 'FaceAlpha', 1, 'EdgeColor', 'none', 'Normalization', 'pdf');
     hold on
     
@@ -49,7 +47,7 @@ end
 %% Do main analysis
 Stat = struct();
 opts = struct();
-opts.weighted_spike_count = true;
+opts.weighted_spike_count = false;
 
 % subjects = {'gru', 'brie', 'allen'};
 % nsubjs = numel(subjects);
@@ -60,25 +58,152 @@ for isubj = 1:nsubjs
     Stat.(subject) = do_spike_count_analyses(D, opts);
 end
 
-%% Plot scatter hists
-fid = 1;
+if opts.weighted_spike_count
+    save('MainAnalysisWeighted.mat', '-v7.3', '-struct', 'Stat');
+else
+    save('MainAnalysisUnweighted.mat', '-v7.3', '-struct', 'Stat');
+end
 
-figdir = 'Figures/HuklabTreadmill/manuscript/';
+%% Load analyses
+Stat = load('MainAnalysisUnweighted.mat');
+
+%% Plot Unit Selectivity and Examples
+field = 'ratebest';
 nboot = 500;
+osis = cell(nsubjs, 1);
+fid = fopen(sprintf("unitselectivity_%s.txt", field), 'w');
+
+for isubj = 1:nsubjs
+    subject = subjects{isubj};
+    cmap = getcolormap(subject, false);
+    fprintf(fid, '\n***************************\n');
+    fprintf(fid, '***************************\n');
+    fprintf(fid, '%s Checking Neuron Selectivity\n', subject);
+
+    NC = numel(Stat.(subject).meanrate);
+    good = find(~isnan(Stat.(subject).meanrate));
+    dsi = nan(NC,1);
+    osi = nan(NC,1);
+    maxrate = nan(NC,1);
+    brate = nan(NC, 2);
+
+    for cc = good(:)'
+        baseline = Stat.(subject).baselinerate(cc);
+
+        % DSI
+        mu = squeeze(Stat.(subject).(['d' field])(cc,:,2));
+        brate(cc,:) = [baseline min(mu)];
+
+%         baseline = min(baseline, min(mu));
+
+        maxrate(cc) = max(mu);
+
+        dsi(cc) = direction_selectivity_index(Stat.(subject).directions, mu(:)-baseline, 2);
+        osi(cc) = orientation_selectivity_index(Stat.(subject).directions, mu(:)-baseline, 2);
+    end
+
+    % remove nans
+    good(isnan(osi(good))) = [];
+
+    % find units with rates that are suppressed during gratings
+    suppressed = brate(:,1) > brate(:,2);
+
+    figure(isubj*20+1); clf
+
+    iix = intersect(find(Stat.(subject).pvis(:,3)<0.05), good);
+    fprintf(fid, '%d units\n', numel(good));
+    fprintf(fid, '%d visually driven\n', numel(iix));
+    fprintf(fid, '%d suppressed\n', sum(suppressed(iix)));
+
+    iix((suppressed(iix)))= [];
+    fprintf(fid, '%d make it in the plot\n', numel(iix));
+    mosi = median(osi(iix));
+    osis{isubj} = osi(iix);
+    ci = bootci(nboot, @median, osi(iix));
+    fprintf(fid, 'median OSI: %02.2f [%02.2f, %02.2f]\n', mosi, ci(1), ci(2));
+
+    histogram(osi(iix), 'binEdges', linspace(0,1,50), 'FaceColor', cmap(6,:), 'EdgeColor', 'none', 'FaceAlpha', 1); hold on
+    plot(mosi, 1.05*max(ylim), 'v', 'MarkerFaceColor', cmap(6,:), 'Color', 'none', 'MarkerSize', 2)
+    xlabel('OSI')
+    set(gca, 'XTick', 0:.25:1)
+    plot.formatFig(gcf, [1.2 1], 'nature')
+    saveas(gcf, fullfile(figdir, sprintf('osi_dist_%s.pdf', subject)))
+
+    figure(isubj*20+2); clf
+
+    metric = osi(:);
+    
+    iix = iix(brate(iix,1) < 15); % exclude multi-units by firing rate
+    [~, inds] = min((metric(iix) - [.1 .49 .9]).^2);
+    inds = iix(inds);
+
+    for i = 1:3
+        cc = inds(i);
+        subplot(1,3,i)
+        mu = squeeze(Stat.(subject).(['d' field])(cc,:,:));
+        plot(Stat.(subject).directions, mu, 'Color', cmap(6,:))
+        hold on
+        plot(Stat.(subject).directions, mu(:,2), '.', 'Color', cmap(6,:))
+        osi0 = orientation_selectivity_index(Stat.(subject).directions, mu(:,2)' - Stat.(subject).baselinerate(cc), 2);
+        plot(xlim, Stat.(subject).baselinerate(cc)*[1 1], '--', 'Color', cmap(2,:))
+        title(sprintf('OSI: %02.2f', metric(cc)))
+
+        plot.offsetAxes(gca, false, 10)
+        ylim([0 max(ylim)])
+        set(gca, 'XTick', 0:45:330)
+        xlim(Stat.(subject).directions([1 end]))
+        xlabel('Orienation (deg.)')
+        if i==1
+            ylabel('Firing Rate (sp s^{-1})')
+        end
+    end
+
+    plot.formatFig(gcf, [3 1], 'nature')
+    saveas(gcf, fullfile(figdir, sprintf('example_tuning_%s.pdf', subject)))
+
+end
+
+
+[pval, ~, stats] = ranksum(osis{:});
+fprintf(fid,'Testing whether %s and %s OSI come from distributions with different medians\n', subjects{:});
+if pval < 0.05
+    fprintf(fid,'%s and %s significantly differ\n', subjects{:});
+    fprintf(fid,'Wilcoxon Rank Sum Test\n');
+    fprintf(fid,'p=%02.7f, ranksum=%d\n', pval, stats.ranksum );
+
+else
+    fprintf(fid,'%s and %s NOT significantly different\n', subjects{:});
+    fprintf(fid,'Wilcoxon Rank Sum Test\n');
+    fprintf(fid,'p=%d, ranksum=%d\n', pval, stats.ranksum );
+end
+
+fclose(fid);
+
+%% Plot scatter hists
+% fid = 1;
 trial_thresh = 300;
-tuningfield = 'ratemarg';
+tuningfield = 'rateweight';
 yscale = 'log';
-plot_index = 'tuned'; % tuned, vis, suppressed, all, foveal, peripheral
+plot_index = 'vis'; % tuned, vis, suppressed, all, foveal, peripheral
 
 fid = fopen(sprintf("main_analysis_%s_%s.txt", tuningfield, plot_index), 'w');
 
 fprintf(fid, '***************************\n');
 fprintf(fid, '***************************\n');
 fprintf(fid, '***************************\n\n');
-fprintf(fid, "Running STATS with the following conditions:\n");
+fprintf(fid, "Running statistics on the spike rate scatter plots\nwith the following conditions:\n");
 fprintf(fid, "nboot: %d\ntrial_thresh: %d\ntuningfield: %s\nunit_index: %s\n", nboot, trial_thresh, tuningfield, plot_index);
+
+fprintf(fid, 'Note: "tuning field" refers to how the preferred stimulus rate was calculated\n');
+fprintf(fid, '\t"ratemarg" means it is the firing rate in the preferred direction after marginalizing over SF and TF\n');
+fprintf(fid, '\t"ratebest" means it is the firing rate in the preferred direction at the best SF and TF\n');
+fprintf(fid, '\t"rateweight" means it is the firing rate in the preferred direction with weighted averging over SF and TF by the tuning\n');
+
 % subjects = fieldnames(Stat);
 nsubjs = numel(subjects);
+frDiffBase = cell(nsubjs, 2); % raw difference and log(ratio)
+frDiffStim = cell(nsubjs, 2);
+frDiffPref = cell(nsubjs, 2);
 
 for isubj = 1:nsubjs
     subject = subjects{isubj};
@@ -105,6 +230,9 @@ for isubj = 1:nsubjs
     frPrefR = nan(NC,3);
     frPrefS = nan(NC,3);
 
+%     ttestp = nan(NC,1);
+%     ttestci = nan(NC,2);
+
     for cc = find(good(:))'
         baseline = Stat.(subject).baselinerate(cc);
         
@@ -119,7 +247,18 @@ for isubj = 1:nsubjs
         baseline = min(baseline, min(mu));
 
         osi(cc) = orientation_selectivity_index(Stat.(subject).directions, mu(:)-baseline, 2);
+
+%         % ttest on running
+%         r = Stat.(subject).robs{cc};
+%         statix = abs(Stat.(subject).runningspeed{cc} ) < 3;
+%         runix = (Stat.(subject).runningspeed{cc} ) > 3;
+%         [H,P,CI] = ttest2(r(statix), r(runix));
+%         ttestp(cc) = P;
+%         ttestci(cc,:) = CI;
+
     end
+
+    
 
     good = ~isnan(Stat.(subject).meanrate);
     rfecc = Stat.(subject).rfecc;
@@ -151,15 +290,13 @@ for isubj = 1:nsubjs
     
 
     NC = size(frBaseR,1);
-
-    incBaseIx = find(frBaseR(:,2) > frBaseS(:,3));
-    decBaseIx = find(frBaseR(:,2) < frBaseS(:,1));
+    
+    incBaseIx = find(Stat.(subject).bootTestMedianfrBase(good) > .975);
+    decBaseIx = find(Stat.(subject).bootTestMedianfrBase(good) < 0.025);
     notSigBaseIx = setdiff( (1:NC)', [incBaseIx; decBaseIx]);
 
-%     incStimIx = find(frStimR(:,2) > frStimS(:,3));
-%     decStimIx = find(frStimR(:,2) < frStimS(:,1));
-    decStimIx = find(Stat.(subject).prctilerunbootmarg(good) < .025);
-    incStimIx = find(Stat.(subject).prctilerunbootmarg(good) > .975);
+    decStimIx = find(Stat.(subject).bootTestMedianfrStim(good) < .025);
+    incStimIx = find(Stat.(subject).bootTestMedianfrStim(good) > .975);
     notSigStimIx = setdiff( (1:NC)', [incStimIx; decStimIx]);
 
     figure(isubj*10+3); clf
@@ -178,12 +315,14 @@ for isubj = 1:nsubjs
 
     xlim([0 100])
     ylim([0 100])
-    l = refline(1,0);
+    l = plot([1 100], [1 100]);
     set(l, 'color', 'k', 'linestyle', '-', 'linewidth', 0.5);
-    l = refline(1,20);
+    l = plot([1 100], [1 100]*2);
     set(l, 'color', 'k', 'linestyle', '-', 'linewidth', 0.5);
-    l = refline(1,-20);
+    l = plot( 1:100, (1:100)/2);
     set(l, 'color', 'k', 'linestyle', '-', 'linewidth', 0.5);
+    xlim([1 100])
+    ylim([1 100])
 
     xlim([0 100])
     ylim([0 100])
@@ -211,9 +350,9 @@ for isubj = 1:nsubjs
         ylim([1 100])
         l = plot([1 100], [1 100]);
         set(l, 'color', 'k', 'linestyle', '-', 'linewidth', 0.5);
-        l = plot([1 100], [1 100]*10);
+        l = plot([1 100], [1 100]*2);
         set(l, 'color', 'k', 'linestyle', '-', 'linewidth', 0.5);
-        l = plot( 1:100, (1:100)/10);
+        l = plot( 1:100, (1:100)/2);
         set(l, 'color', 'k', 'linestyle', '-', 'linewidth', 0.5);
         xlim([1 100])
         ylim([1 100])
@@ -236,13 +375,17 @@ for isubj = 1:nsubjs
     saveas(gcf, fullfile(figdir, sprintf('rate_compare_stim_%s_%s_%s.pdf', yscale, plot_index, subject)))
 
     % Preferred direction FIRING RATE (marginalized across all conditions)
+    decPrefIx = find(Stat.(subject).prctilerunbootmarg(good) < .025);
+    incPrefIx = find(Stat.(subject).prctilerunbootmarg(good) > .975);
+    notSigPrefIx = setdiff( (1:NC)', [incPrefIx; decPrefIx]);
+
     figure(isubj*10+2); clf
     plot(frPrefS(:,[2 2])', frPrefR(:,[1 3])', 'Color', .5*[1 1 1 .1]); hold on
     plot(frPrefS(:,[1 3])', frPrefR(:,[2 2])', 'Color', .5*[1 1 1 .1])
 
-    plot(frPrefS(notSigStimIx,2), frPrefR(notSigStimIx,2), 'o', 'Color', 'w', 'Linewidth', .25, 'MarkerSize', ms, 'MarkerFaceColor', cmap(2,:))
-    plot(frPrefS(incStimIx,2), frPrefR(incStimIx,2), 'o', 'Color', 'w', 'Linewidth', .25, 'MarkerSize', ms, 'MarkerFaceColor', cmap(6,:)); hold on
-    plot(frPrefS(decStimIx,2), frPrefR(decStimIx,2), 'o', 'Color', 'w', 'Linewidth', .25, 'MarkerSize', ms, 'MarkerFaceColor', cmap(6,:))
+    plot(frPrefS(notSigPrefIx,2), frPrefR(notSigPrefIx,2), 'o', 'Color', 'w', 'Linewidth', .25, 'MarkerSize', ms, 'MarkerFaceColor', cmap(2,:))
+    plot(frPrefS(incPrefIx,2), frPrefR(incPrefIx,2), 'o', 'Color', 'w', 'Linewidth', .25, 'MarkerSize', ms, 'MarkerFaceColor', cmap(6,:)); hold on
+    plot(frPrefS(decPrefIx,2), frPrefR(decPrefIx,2), 'o', 'Color', 'w', 'Linewidth', .25, 'MarkerSize', ms, 'MarkerFaceColor', cmap(6,:))
     
 
     xlabel('Stationary Firing Rate')
@@ -254,9 +397,9 @@ for isubj = 1:nsubjs
         ylim([1 100])
         l = plot([1 100], [1 100]);
         set(l, 'color', 'k', 'linestyle', '-', 'linewidth', 0.5);
-        l = plot([1 100], [1 100]*10);
+        l = plot([1 100], [1 100]*2);
         set(l, 'color', 'k', 'linestyle', '-', 'linewidth', 0.5);
-        l = plot( 1:100, (1:100)/10);
+        l = plot( 1:100, (1:100)/2);
         set(l, 'color', 'k', 'linestyle', '-', 'linewidth', 0.5);
         xlim([1 100])
         ylim([1 100])
@@ -305,15 +448,24 @@ for isubj = 1:nsubjs
     fprintf(fid, 'Baseline rates: p = %02.10f\n', pvalBase);
     fprintf(fid, 'Stim-driven rates: p = %02.10f\n', pvalStim);
     fprintf(fid, 'Preferred Stim rates: p = %02.10f\n', pvalPref);
+    
+
+    frDiffBase{isubj,1} = frBaseR(:,2) - frBaseS(:,2);
+    frDiffStim{isubj,1} = frStimR(:,2) - frStimS(:,2);
+    frDiffPref{isubj,1} = frPrefR(:,2) - frPrefS(:,2);
+
+    frDiffBase{isubj,2} = log10(frBaseR(:,2)) - log10(frBaseS(:,2));
+    frDiffStim{isubj,2} = log10(frStimR(:,2)) - log10(frStimS(:,2));
+    frDiffPref{isubj,2} = log10(frPrefR(:,2)) - log10(frPrefS(:,2));
 
     rrat = frBaseR(:,2)./frBaseS(:,2);
-    good = ~(isnan(rrat) | isinf(rrat));
+    good = ~(isnan(rrat) | isinf(rrat) | rrat==0);
     [m, ci] = geomeanci(rrat(good));
 
     fprintf(fid, "geometric mean baseline firing rate ratio (Running:Stationary) is %02.3f [%02.3f, %02.3f] (n=%d)\n", m, ci(1), ci(2), sum(good));
 
     rrat = frStimR(:,2)./frStimS(:,2);
-    good = ~(isnan(rrat) | isinf(rrat));
+    good = ~(isnan(rrat) | isinf(rrat) | rrat==0);
     [m, ci] = geomeanci(rrat(good));
 
     fprintf(fid, "geometric mean stim-driven firing rate ratio (Running:Stationary) is %02.3f [%02.3f, %02.3f] (n=%d)\n", m, ci(1), ci(2), NC);
@@ -335,8 +487,8 @@ for isubj = 1:nsubjs
         issig = frBaseR(:,2) < frBaseS(:,1) | frBaseR(:,2) > frBaseS(:,3);
         histogram(log10(frBaseS(issig,2))-log10(frBaseR(issig,2)), 'binEdges', bins, 'EdgeColor', 'none', 'FaceColor', cmap(6,:), 'FaceAlpha', 1);
         plot([0 0], ylim, 'k')
-        plot(1*[1 1], ylim, 'k--')
-        plot(-1*[1 1], ylim, 'k--')
+        plot(log10(2)*[1 1], ylim, 'k--')
+        plot(-log10(2)*[1 1], ylim, 'k--')
         plot.formatFig(gcf, [1.73 .669], 'nature')
         saveas(gcf, fullfile(figdir, sprintf('rate_compare_basehist_log_%s_%s.pdf', plot_index, subject)))
     else
@@ -360,8 +512,8 @@ for isubj = 1:nsubjs
         issig = modUnits; %frStimR(:,2) < frStimS(:,1) | frStimR(:,2) > frStimS(:,3);
         histogram(log10(frStimS(issig,2))-log10(frStimR(issig,2)), 'binEdges', bins, 'EdgeColor', 'none', 'FaceColor', cmap(6,:), 'FaceAlpha', 1);
         plot([0 0], ylim, 'k')
-        plot(1*[1 1], ylim, 'k--')
-        plot(-1*[1 1], ylim, 'k--')
+        plot(log10(2)*[1 1], ylim, 'k--')
+        plot(-log10(2)*[1 1], ylim, 'k--')
         plot.formatFig(gcf, [1.73 .669], 'nature')
         saveas(gcf, fullfile(figdir, sprintf('rate_compare_stimhist_log_%s_%s.pdf', plot_index, subject)))
     else
@@ -385,8 +537,8 @@ for isubj = 1:nsubjs
         issig = modUnits; %frPrefR(:,2) < frPrefS(:,1) | frPrefR(:,2) > frPrefS(:,3);
         histogram(log10(frPrefS(issig,2))-log10(frPrefR(issig,2)), 'binEdges', bins, 'EdgeColor', 'none', 'FaceColor', cmap(6,:), 'FaceAlpha', 1);
         plot([0 0], ylim, 'k')
-        plot(1*[1 1], ylim, 'k--')
-        plot(-1*[1 1], ylim, 'k--')
+        plot(log10(2)*[1 1], ylim, 'k--')
+        plot(-log10(2)*[1 1], ylim, 'k--')
         plot.formatFig(gcf, [1.73 .669], 'nature')
         saveas(gcf, fullfile(figdir, sprintf('rate_compare_prefhist_log_%s_%s.pdf', plot_index, subject)))
     else
@@ -409,101 +561,77 @@ for isubj = 1:nsubjs
 
 end
 
+% --- Compare mouse and marmoset across conditions
+conditions = {'Baseline', 'All Stimuli', 'Preferred Stimulus'};
+fprintf(fid, '\n\n***********************\nComparing %s and %s\n', subjects{:});
+
+for i = 1:numel(conditions)
+    cond = conditions{i};
+    switch cond
+        case {'Baseline'}
+            frDiff = frDiffBase;
+        case {'All Stimuli'}
+            frDiff = frDiffStim;
+        case {'Preferred Stimulus'}
+            frDiff = frDiffPref;
+    end
+
+    figure(i); clf
+    subplot(1,2,1)
+    histogram(frDiff{1,1}, 'binEdges', linspace(-20,20,100), 'Normalization', 'probability'); hold on
+    histogram(frDiff{2,1}, 'binEdges', linspace(-20,20,100), 'Normalization', 'probability');
+
+    [pval, ~, stats] = ranksum(frDiff{:,1});
+
+    fprintf(fid, '\n\n***********************\n');
+    fprintf(fid, '\n\nCondition: modulation of [%s] spike rate\n\n', cond);
+    fprintf(fid, '\nSpike Rate Differences\nTest for different medians\n');
+    fprintf(fid, 'Wilcoxon Rank Sum Test\n');
+    if pval < 0.05
+        fprintf(fid,'%s and %s significantly differ\n', subjects{:});
+        fprintf(fid,'p=%d, ranksum=%d\n', pval, stats.ranksum );
+
+    else
+        fprintf(fid,'%s and %s NOT significantly different\n', subjects{:});
+        fprintf(fid,'p=%d, ranksum=%d\n', pval, stats.ranksum );
+    end
+
+    subplot(1,2,2)
+    histogram(frDiff{1,2}, 'binEdges', linspace(-1,1,100), 'Normalization', 'probability'); hold on
+    histogram(frDiff{2,2}, 'binEdges', linspace(-1,1,100), 'Normalization', 'probability');
+    title(cond)
+
+    [pval, ~, stats] = ranksum(frDiff{:,2});
+
+    fprintf(fid,'\nLog Spike Rate Ratio\nTest for different medians\n');
+    fprintf(fid,'Wilcoxon Rank Sum Test\n');
+
+    if pval < 0.05
+        fprintf(fid,'%s and %s significantly differ\n', subjects{:});
+        fprintf(fid,'p=%d, ranksum=%d\n', pval, stats.ranksum );
+
+    else
+        fprintf(fid,'%s and %s NOT significantly different\n', subjects{:});
+        fprintf(fid,'p=%d, ranksum=%d\n', pval, stats.ranksum );
+    end
+end
+
 fclose(fid);
 %%
 
 % subjects = {'gru', 'brie', 'allen'};
 % nsubjs = numel(subjects);
-field = 'rateweight';
-for isubj = 1:nsubjs
-    subject = subjects{isubj};
-    cmap = getcolormap(subject, false);
-    fprintf('***************************\n\n')
-    fprintf('***************************\n\n')
-    fprintf('%s\n', subject)
 
-    NC = numel(Stat.(subject).meanrate);
-    good = find(~isnan(Stat.(subject).meanrate));
-    dsi = nan(NC,1);
-    osi = nan(NC,1);
-    maxrate = nan(NC,1);
-    brate = nan(NC, 2);
 
-    for cc = good(:)'
-        baseline = Stat.(subject).baselinerate(cc);
 
-        % DSI
-        mu = squeeze(Stat.(subject).(['d' field])(cc,:,2));
-        brate(cc,:) = [baseline min(mu)];
-
-        baseline = min(baseline, min(mu));
-
-        maxrate(cc) = max(mu);
-
-        dsi(cc) = direction_selectivity_index(Stat.(subject).directions, mu(:)-baseline, 2);
-        osi(cc) = orientation_selectivity_index(Stat.(subject).directions, mu(:)-baseline, 2);
-    end
-
-    % remove nans
-    good(isnan(osi(good))) = [];
-
-    % find units with rates that are suppressed during gratings
-    suppressed = brate(:,1) > brate(:,2);
-
-    figure(isubj*20+1); clf
-
-    iix = intersect(find(Stat.(subject).pvis(:,3)<0.05), good);
-    fprintf('%d units\n', numel(good))
-    fprintf('%d visually driven\n', numel(iix))
-    fprintf('%d suppressed\n', sum(suppressed(iix)))
-
-    iix((suppressed(iix)))= [];
-    fprintf('%d make it in the plot\n', numel(iix))
-    mosi = median(osi(iix));
-    ci = bootci(nboot, @median, osi(iix));
-    fprintf('median OSI: %02.2f [%02.2f, %02.2f]\n', mosi, ci(1), ci(2))
-
-    histogram(osi(iix), 'binEdges', linspace(0,1,50), 'FaceColor', cmap(6,:), 'EdgeColor', 'none', 'FaceAlpha', 1)
-    xlabel('OSI')
-    set(gca, 'XTick', 0:.25:1)
-    plot.formatFig(gcf, [1.2 1], 'nature')
-    saveas(gcf, fullfile(figdir, sprintf('osi_dist_%s.pdf', subject)))
-
-    figure(isubj*20+2); clf
-
-    metric = osi(:);
-    
-    iix = iix(brate(iix,1) < 15); % exclude multi-units by firing rate
-    [~, inds] = min((metric(iix) - [.1 .5 .9]).^2);
-    inds = iix(inds);
-
-    for i = 1:3
-        cc = inds(i);
-        subplot(1,3,i)
-        mu = squeeze(Stat.(subject).(['d' field])(cc,:,:));
-        plot(Stat.(subject).directions, mu, 'Color', cmap(6,:))
-        hold on
-        plot(Stat.(subject).directions, mu(:,2), '.', 'Color', cmap(6,:))
-        osi0 = orientation_selectivity_index(Stat.(subject).directions, mu(:,2)' - Stat.(subject).baselinerate(cc), 2);
-        plot(xlim, Stat.(subject).baselinerate(cc)*[1 1], '--', 'Color', cmap(2,:))
-        title(sprintf('OSI: %02.2f', metric(cc)))
-
-        plot.offsetAxes(gca, false, 10)
-        ylim([0 max(ylim)])
-        set(gca, 'XTick', 0:45:330)
-        xlim(Stat.(subject).directions([1 end]))
-        xlabel('Orienation (deg.)')
-        if i==1
-            ylabel('Firing Rate (sp s^{-1})')
-        end
-    end
-
-    plot.formatFig(gcf, [3 1], 'nature')
-    saveas(gcf, fullfile(figdir, sprintf('example_tuning_%s.pdf', subject)))
-
-end
 
 %%
+
+isubj = 2;
+
+subject = subjects{isubj};
+good = find(~isnan(Stat.(subject).meanrate));
+NC = good;
 
 
 %%
