@@ -15,17 +15,18 @@ end
 
 g0 = 0; % initialize gain
 
-if exist('restLabels', 'var') && ismember(GainLabel, restLabels)
+if sum(gain_idx) > 1 %exist('restLabels', 'var') && ismember(GainLabel, restLabels)
     gdim = sum(gain_idx);
     w0 = ones(gdim,1);
     gain_has_weights = true;
-    gain_rest_idx = find(gain_idx(rest_idx));
+    gain_rest_idx = 1:gdim;
 else
     gain_has_weights = false;
 end
 
 if gain_has_weights
-    xgain = X(train_inds,gain_idx)*w0;
+    xgainraw = X(train_inds,gain_idx);
+    xgain = xgainraw*w0;
 else
     xgain = X(train_inds,gain_idx);
 end
@@ -59,18 +60,23 @@ while true
     % fit gains
     stimproj = xstim*Bfull((1:sum(stim_idx))+1);
     if gain_has_weights
-        w0 = Bfull(1 + sum(stim_idx) + gain_rest_idx);
+        xtmp = [stimproj stimproj .* xgainraw xrest];
+        [Lgain, Bgain] = ridgeMML(Ytrain, xtmp, false, Lgain);
+        w0 = Bgain(2+gain_rest_idx);
         xgain = X(train_inds,gain_idx)*w0;
+        g0 = [Bgain(2) 1];
+    else
+
+        [Lgain, Bgain] = ridgeMML(Ytrain, [stimproj stimproj.*xgain xrest], false, Lgain);
+
+        g0 = Bgain(2:3);
+        g0 = max(g0, 0);
+        g0 = min(g0, 5);
+
+        g = g0(1) + xgain*g0(2);
     end
-
-    [Lgain, Bgain] = ridgeMML(Ytrain, [stimproj stimproj.*xgain xrest], false, Lgain);
-
-    g0 = Bgain(2:3);
-    g0 = max(g0, 0);
-    g0 = min(g0, 5);
-
-    g = g0(1) + xgain*g0(2);
     g = max(g, 0); % gain cannot go negative
+
     [Lfull, Bfull0] = ridgeMML(Ytrain, [xstim.*g xrest], false, Lfull);
     
     yhatF = [xstim.*g xrest]*Bfull(2:end) + Bfull(1);
@@ -112,54 +118,3 @@ xrest = X(:,rest_idx);
 g = Gain(1) + xgain*Gain(2);
 
 Rhat = [xstim.*g xrest]*Betas(2:end) + Betas(1);
-
-% 
-% %% different parameterization
-% cc = 2;
-% 
-% g0 = 1; % initialize gain
-% 
-% xgain = X(:,gain_idx);
-% xstim = X(:,stim_idx);
-% xrest = X(:,~(gain_idx | stim_idx));
-% SSfull0 = sum( (Y - mean(Y)).^2);
-% 
-% g = xgain*g0 + ~xgain;
-% 
-% Lgain = nan;
-% Lfull = nan;
-% 
-% [Lfull, Bfull, convergenceFailures] = ridgeMML(Y, [xstim.*g xrest], false, Lfull);
-% 
-% yhatF = [xstim.*g xrest]*Bfull(2:end) + Bfull(1);
-% SSfull = sum( (Y - yhatF).^2);
-% 
-% step = SSfull0 - SSfull;
-% SSfull0 = SSfull;
-% steptol = 1e-3;
-% iter = 1;
-% 
-% %%
-% 
-% while step > steptol && iter < 10
-%     
-%     % fit gains
-%     stimproj = xstim*Bfull(find(stim_idx)+1);
-% 
-%     [Lgain, Bgain] = ridgeMML(Y(xgain>0), [stimproj(xgain>0) xrest(xgain>0,:)], false, Lgain);
-% 
-%     g0 = Bgain(2);
-%     g = xgain*g0 + ~xgain;
-%     
-%     [Lfull, Bfull] = ridgeMML(Y, [xstim.*g xrest], false);
-%     
-%     yhatF = [xstim.*g xrest]*Bfull(2:end) + Bfull(1);
-%     SSfull = sum( (Y - yhatF).^2);
-% 
-%     step = SSfull0 - SSfull;
-%     SSfull0 = SSfull;
-%     fprintf("Step %d, %02.5f\n", iter, step)
-%     iter = iter + 1;
-% end
-% 
-%%

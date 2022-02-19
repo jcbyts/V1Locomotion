@@ -820,6 +820,7 @@ D.subj = 'marmoset';
 % fname = fullfile(fout, sprintf('%s_%d.mat', D.subj, unitId));
 % do_regression_ss(D, unitId, fout);
 % load(fname)
+
 %%
 [Stim, Robs] = bin_spikes_as_trials(D, unitId, 'plot', true, 'binsize', 1/60, 'win', [-.2, .2]);
 
@@ -841,10 +842,13 @@ plot(Rpred_indiv.data.Robs(iix))
 direction = stim{1};
 speed = stim{2};
 freq = stim{3};
-runspeed = nanmean(behavior{1},2);
+runspeed = nanmean(behavior{1},2); %#ok<*NANMEAN> 
 pupil = nanmean(behavior{3},2);
 
 good_ix = ~(isnan(direction) | isnan(runspeed) | isnan(pupil));
+
+R = mean(robs(:,unitopts.lags>0),2)/unitopts.binsize;
+R = R(good_ix);
 
 direction = direction(good_ix);
 speed = speed(good_ix);
@@ -908,13 +912,14 @@ fullR = [fullR pupil];
 
 %%
 
-
+opts = struct();
 opts.randomize_folds = false;
-opts.folds = 10;
+opts.folds = 20;
 
 xidxs = xvalidationIdx(nt, opts.folds, opts.randomize_folds);
 
-restLabels = {{'RunSpeed'} {'Drift'} {'IsRun'}};
+% restLabels = {{'RunSpeed'} {'Drift'} {'IsRun'}};
+restLabels = {{'RunSpeed'}, {'Drift'}, {'IsRun'}};
 GainLabels = {'RunSpeed', 'Drift', 'IsRun'};
 StimLabels = {'Stim', 'Stim', 'Stim'};
 
@@ -929,7 +934,7 @@ for i = 1:opts.folds
     nlfun = @nlfuns.expfun;
     
 
-    [Betas, Gain, Ridge, Rhat, Lgain, Lfull, gdrive] = AltLeastSqGainModelFmin(fullR, R, xidxs{i,1}, regIdx, regLabels, StimLabel, GainLabel, restLabel);
+    [Betas, Gain, Ridge, Rhat, Lgain, Lfull, gdrive] = AltLeastSqGainModel(fullR, R, xidxs{i,1}, regIdx, regLabels, StimLabel, GainLabel, restLabel);
 
     Rpred(xidxs{i,2}) = Rhat(xidxs{i,2});
     Gdrive(xidxs{i,2}) = gdrive(xidxs{i,2});
@@ -937,9 +942,11 @@ end
 
 
 figure(1); clf
+subplot(3,1,1:2)
 plot(R, 'k')
 hold on
 plot(Rpred, 'r')
+subplot(3,1,3)
 plot(Gdrive, 'g')
 rsquared(R, Rhat)
 
