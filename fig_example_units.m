@@ -2,7 +2,7 @@
 %% path
 figdir = 'Figures/HuklabTreadmill/manuscript/';
 %% load session
-subject = 'gru';
+subject = 'marmoset';
 D = load_subject(subject);
 
 
@@ -10,9 +10,45 @@ D = load_subject(subject);
 thresh = 3;
 unitList = unique(D.spikeIds);
 %%
-% gru: 10,22, 94, 97, 126, 164, 356, 357, 358, 460
-cc = 97;
-
+% % gru: 10,22, 94, 97, 126, 164, 356, 357, 358, 460
+% cc = 97
+cc = 1;
+% siglist = [136, 176, 189, 195, 201, 202, 225, 228, 231, 239
+%          245
+%          278
+%          289
+%          303
+%          306
+%          313
+%          370
+%          432
+%          438
+%          444
+%          446
+%          447
+%          476
+%          489
+%          503
+%          504
+%          514
+%          524
+%          535
+%          541
+%          546
+%          568
+%          686
+%          721
+%          929
+%          985
+%          987
+%         1041
+%         1085
+%         1123
+%         1128
+%         1139
+%         1491
+%         1541
+%         1546
 unitId = unitList(cc);
 [stimconds, robs, B, opts] = bin_ssunit(D, unitId, 'win', [-.2 .2], 'plot', false, 'binsize', 1e-3);
 
@@ -97,7 +133,7 @@ end
 
 % plot.fixfigure(gcf, 6, [3 1])
 set(gcf, 'PaperSize', [3 1], 'PaperPosition', [0 0 3 1])
-saveas(gcf, fullfile(figdir, sprintf('example_raster_%s_%d.pdf', subject, cc)))
+% saveas(gcf, fullfile(figdir, sprintf('example_raster_%s_%d.pdf', subject, cc)))
 
 
 %% step through cells

@@ -1,4 +1,4 @@
-function [Betas, Gain, Ridge, Rhat, Lgain, Lfull, g] = AltLeastSqGainModel(X, Y, train_inds, covIdx, covLabels, StimLabel, GainLabel, restLabels, Lgain, Lfull)
+function [Betas, Gain, Ridge, Rhat, Lgain, Lfull, g] = AltLeastSqGainModelFmin(X, Y, train_inds, covIdx, covLabels, StimLabel, GainLabel, restLabels, Lgain, Lfull)
 % Use alternating least squares to estimate gains and offsets
 % [Betas, Gain, Ridge] = AltLeastSqGainModel(X, Y, covIdx, covLabels, StimLabel, GainLabel)
 
@@ -33,6 +33,8 @@ end
 xstim = X(train_inds,stim_idx);
 xrest = X(train_inds,rest_idx);
 Ytrain = Y(train_inds);
+nt = numel(Ytrain);
+
 % SSfull0 = sum( (Ytrain - mean(Ytrain)).^2);
 g = 1 + xgain*g0;
 
@@ -47,37 +49,50 @@ end
 [Lfull, Bfull] = ridgeMML(Ytrain, [xstim.*g xrest], false, Lfull);
 
 yhatF = [xstim.*g xrest]*Bfull(2:end) + Bfull(1);
-SSfull = sum( (Ytrain - yhatF).^2);
+MSEfull = mean( (Ytrain - yhatF).^2);
 
 % step = SSfull0 - SSfull;
-SSfull0 = SSfull;
+MSEfull0 = MSEfull;
 steptol = 1e-3;
 iter = 1;
+
+fminopts = optimset('MaxIter', 5e3, 'GradObj', 'On', 'Hessian', 'lbfgs', 'display', 'iter');
 
 while true
     
     % fit gains
     stimproj = xstim*Bfull((1:sum(stim_idx))+1);
+    nlfun = @nlfuns.linear;
     if gain_has_weights
-        w0 = Bfull(1 + sum(stim_idx) + gain_rest_idx);
+        w0 = Bfull(1 + find(gain_idx));
+        offset = xrest*Bfull(1 + find(rest_idx));
+        fun = @(wgain) regression.mse_loss_mod(wgain, X(train_inds,gain_idx), Ytrain, nlfun, stimproj, offset);
+        [w0, MSEfull] = fmincon(fun, [w0; 1; 0], [], [],[],[],[],[],[],fminopts);
         xgain = X(train_inds,gain_idx)*w0;
     end
+    
+    xxg = [ones(nt,1) stimproj stimproj.*xgain xrest];
+    
+    [Lgain, Bg0] = ridgeMML(Ytrain, [stimproj stimproj.*xgain xrest], false, Lgain);
 
+    fun = @(w) regression.mse_loss(w, xxg, Ytrain, nlfun);
+    nrest = sum(rest_idx);
+    Bgain = fmincon(fun, Bg0, [], [],[],[],[-1e3 0 0 -1e3*ones(1,nrest)],[],[],fminopts);
+    
     [Lgain, Bgain] = ridgeMML(Ytrain, [stimproj stimproj.*xgain xrest], false, Lgain);
 
     g0 = Bgain(2:3);
-    g0 = max(g0, 0);
-    g0 = min(g0, 5);
-
     g = g0(1) + xgain*g0(2);
-    g = max(g, 0); % gain cannot go negative
-    [Lfull, Bfull0] = ridgeMML(Ytrain, [xstim.*g xrest], false, Lfull);
     
-    yhatF = [xstim.*g xrest]*Bfull(2:end) + Bfull(1);
-    SSfull = sum( (Ytrain - yhatF).^2);
+    [Lfull, Bfull0] = ridgeMML(Ytrain, [xstim.*g xrest], false, Lfull);
+    xxg = [ones(nt,1) xstim.*g xrest];
+    fun = @(w) regression.mse_loss(w, xxg, Ytrain, nlfun);
+    Bfull0 = fmincon(fun, Bfull0, [], [],[],[],[],[],[],fminopts);
 
-    step = SSfull0 - SSfull;
-    SSfull0 = SSfull;
+    MSEfull = fun(Bfull0);
+    
+    step = MSEfull0 - MSEfull;
+    MSEfull0 = MSEfull;
     if step < steptol || iter > 5
         break
     end
