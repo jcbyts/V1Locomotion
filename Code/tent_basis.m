@@ -5,7 +5,12 @@ function B = tent_basis(y, ctrs)
         dscale2 = dc;
     else
         dc = diff(ctrs);
-        dscale1 = [ctrs(1) dc];
+        if ctrs(1)==0
+            dscale1 = [dc(1) dc];
+        else
+            dscale1 = [ctrs(1) dc];
+        end
+        
         dscale2 = [dc dc(end)];
     end
     

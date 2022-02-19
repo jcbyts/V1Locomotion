@@ -127,7 +127,7 @@ for cc = 1:NC
     R = R ./ winsize;
 
 %     SKIP IF SPIKE RATE DURING GRATINGS BELOW THRESHOLD
-    if mean(R) < opts.spike_rate_thresh % skip if spike rate is less that 
+    if (mean(R) < opts.spike_rate_thresh) || (mean(R==0)>.5) % skip if spike rate is less that 
         continue
     end
 
