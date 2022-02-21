@@ -2,12 +2,14 @@
 %% paths
 fpath = getpref('FREEVIEWING', 'HUKLAB_DATASHARE');
 figdir = 'Figures/HuklabTreadmill/manuscript/';
+
+subjects = {'mouse', 'marmoset'};
+nsubjs = numel(subjects);
 %% Basic summary of session running
 thresh = 1; % running threshold
 % subjects = {'gru', 'brie', 'allen'};
 
-subjects = {'mouse', 'marmoset'};
-nsubjs = numel(subjects);
+
 
 figure(1); clf
 
@@ -473,31 +475,6 @@ for igroup = 1:numel(unit_groups)
         fprintf(fid, "geometric mean pref-stim firing rate ratio (Running:Stationary) is %02.3f [%02.3f, %02.3f] (n=%d)\n", m, ci(1), ci(2), NC);
 
 
-        % DIFFERENCE HISTOGRAMS
-        if strcmp(yscale, 'log')
-            figure(isubj*10+1); clf
-            bins = linspace(-1,1,100);
-            histogram(log10(frBaseS(:,2))-log10(frBaseR(:,2)), 'binEdges', bins, 'EdgeColor', 'none', 'FaceColor', cmap(2,:), 'FaceAlpha', 1); hold on
-            issig = frBaseR(:,2) < frBaseS(:,1) | frBaseR(:,2) > frBaseS(:,3);
-            histogram(log10(frBaseS(issig,2))-log10(frBaseR(issig,2)), 'binEdges', bins, 'EdgeColor', 'none', 'FaceColor', cmap(6,:), 'FaceAlpha', 1);
-            plot([0 0], ylim, 'k')
-            plot(log10(2)*[1 1], ylim, 'k--')
-            plot(-log10(2)*[1 1], ylim, 'k--')
-            plot.formatFig(gcf, [1.73 .669], 'nature')
-            saveas(gcf, fullfile(figdir, sprintf('rate_compare_basehist_log_%s_%s.pdf', plot_index, subject)))
-        else
-            figure(isubj*10+1); clf
-            bins = linspace(-50,50,100);
-            histogram(frBaseS(:,2)-frBaseR(:,2), 'binEdges', bins, 'EdgeColor', 'none', 'FaceColor', cmap(2,:), 'FaceAlpha', 1); hold on
-            issig = frBaseR(:,2) < frBaseS(:,1) | frBaseR(:,2) > frBaseS(:,3);
-            histogram(frBaseS(issig,2)-frBaseR(issig,2), 'binEdges', bins, 'EdgeColor', 'none', 'FaceColor', cmap(6,:), 'FaceAlpha', 1);
-            plot([0 0], ylim, 'k')
-            plot(20*[1 1], ylim, 'k--')
-            plot(-20*[1 1], ylim, 'k--')
-            plot.formatFig(gcf, [1.73 .669], 'nature')
-            saveas(gcf, fullfile(figdir, sprintf('rate_compare_basehist_%s_%s.pdf', plot_index, subject)))
-        end
-
         % STIM-DRIVEN
         if strcmp(yscale, 'log')
             figure(isubj*10+2); clf
@@ -675,174 +652,332 @@ fclose(fid);
 
 
 
-%% check significant units
+%% check significant units with regression
 fid = 1;
-isubj = 2;
+fout = fullfile(getpref('FREEVIEWING', 'HUKLAB_DATASHARE'), 'regression_ss');
+
+isubj = 1;
 subject = subjects{isubj};
-cmap = getcolormap(subject, false);
-plot_index = 'tune';
 
-fprintf(fid, '***************************\n\n');
-fprintf(fid, '%s\n', subject);
-fprintf(fid, '***************************\n\n');
+D = load_subject(subject);
+D.subj = subject;
 
-% firing rate during stimulus (regardless of direction)
-frStimR = Stat.(subject).frStimR;
-frStimS = Stat.(subject).frStimS;
+sigunits = Stat.(subject).cid(Stat.(subject).runrhop < 0.05);
 
-% --- compute some indices
-good = ~isnan(Stat.(subject).meanrate); % units with > 1 spike / sec
-numtrials = cellfun(@numel, Stat.(subject).robs);
-good = good & numtrials > trial_thresh;
-
-NC = numel(good);
-osi = nan(NC,1);
-brate = nan(NC, 2);
-pvis = Stat.(subject).pvis(:,3)<0.05;
-frPrefR = nan(NC,3);
-frPrefS = nan(NC,3);
-
-ttestp = nan(NC,1);
-ttestci = nan(NC,2);
-
-for cc = find(good(:))'
-    baseline = Stat.(subject).baselinerate(cc);
-
-    % DSI
-    mu = squeeze(Stat.(subject).(['d' tuningfield])(cc,:,2));
-    [~,prefid] = max(mu);
-    frPrefR(cc,:) = Stat.(subject).(['d' tuningfield 'R'])(cc,prefid,:);
-    frPrefS(cc,:) = Stat.(subject).(['d' tuningfield 'S'])(cc,prefid,:);
-
-    brate(cc,:) = [baseline min(mu)];
-
-    baseline = min(baseline, min(mu));
-
-    osi(cc) = orientation_selectivity_index(Stat.(subject).directions, mu(:)-baseline, 2);
-
-    % ttest on running
-    r = Stat.(subject).robs{cc};
-    statix = abs(Stat.(subject).runningspeed{cc} ) < 3;
-    runix = (Stat.(subject).runningspeed{cc} ) > 3;
-    [H,P,CI] = ttest2(r(statix), r(runix),'Vartype','unequal');
-    ttestp(cc) = P;
-    ttestci(cc,:) = CI;
-
+%%
+parfor cc = 1:numel(sigunits)
+    cid = sigunits(cc);
+    do_regression_ss(D, cid, fout, true)
 end
 
-
-
-good = ~isnan(Stat.(subject).meanrate);
-rfecc = Stat.(subject).rfecc;
-
-switch plot_index
-    case 'vis'
-        good = good & pvis;
-    case 'tuned'
-        good = good & pvis & osi > .2;
-    case 'suppressed'
-        good = good & brate(:,1) > brate(:,2);
-    case 'foveal'
-        good = good & rfecc < 5;
-    case 'peripheral'
-        good = good & rfecc > 10;
-
-end
-fprintf(fid, 'Using [%s] units only (%d units)\n', plot_index, sum(good));
-
-
-frStimR = frStimR(good,:);
-frStimS = frStimS(good,:);
-frPrefR = frPrefR(good,:);
-frPrefS = frPrefS(good,:);
-
-
-NC = size(frStimR,1);
-
-decStimIx = find(Stat.(subject).bootTestMedianfrStim(good) < .025);
-incStimIx = find(Stat.(subject).bootTestMedianfrStim(good) > .975);
-notSigStimIx = setdiff( (1:NC)', [incStimIx; decStimIx]);
-
-% Preferred direction FIRING RATE (marginalized across all conditions)
-decPrefIx = find(Stat.(subject).prctilerunbootmarg(good) < .025);
-incPrefIx = find(Stat.(subject).prctilerunbootmarg(good) > .975);
-notSigPrefIx = setdiff( (1:NC)', [incPrefIx; decPrefIx]);
-
-
-figure(1); clf
-plot(log10(frPrefS(:,2)), log10(frPrefR(:,2)), '.')
-
-
-histogram(log10(frPrefR(:,2))-log10(frPrefS(:,2)))
 
 %%
 fout = fullfile(getpref('FREEVIEWING', 'HUKLAB_DATASHARE'), 'regression_ss');
-inds = find(good);
-unitList = inds((frPrefR(:,2)./frPrefS(:,2)) > 2);
-cc = 1%cc + 1;
-cid = unitList(cc);
-figure(1); clf
-plot(Stat.(subject).robs{cid}, 'k')
-hold on
-plot(Stat.(subject).runningspeed{cid}, 'r')
-Stat.(subject).runrho(cid)
-Stat.(subject).runrhop(cid)
+S = struct();
 
-unitId = Stat.(subject).cid(cid);
+for isubj = 1:2
+    subject = subjects{isubj};
+
+    flist = dir(fullfile(fout, [subject '*.mat']));
+    cids = arrayfun(@(x) str2double(cell2mat(regexp(x.name, '\d+', 'match'))), flist);
+    rpred = cell(max(cids),1);
+
+    for i = 1:numel(flist)
+
+        load(fullfile(flist(i).folder, flist(i).name));
+        rpred{Rpred_indiv.data.cid} = Rpred_indiv;
+    end
+
+%     iix = ~cellfun(@isempty, rpred);
+
+    
+    models2compare = {'RunningSpeedGain', 'Stim', 'RunNoGain', 'DriftNoGain', 'SlowDrift', 'RunningGain', 'RunningGainNoDrift'};
+    for imodel = 1:numel(models2compare)
+        model = models2compare{imodel};
+
+
+        S.(subject).(model).rsquared = cellfun(@(x) x.(model).Rsquared, rpred(cids));
+        S.(subject).(model).runrho = cellfun(@(x) x.(model).runrho, rpred(cids));
+        S.(subject).(model).runrhop = cellfun(@(x) x.(model).runrhop, rpred(cids));
+        S.(subject).(model).cids = cellfun(@(x) x.data.cid, rpred(cids));
+    end
+
+    model = 'data';
+    S.(subject).(model).runrho = cellfun(@(x) x.(model).runrho, rpred(cids));
+    S.(subject).(model).runrhop = cellfun(@(x) x.(model).runrhop, rpred(cids));
+
+
+    figure(isubj); clf
+    cmap = getcolormap(subject, false);
+
+
+    subplot(1,2,1)
+    m1 = 'Stim';
+    m2 = 'RunNoGain';
+    r21 =  S.(subject).(m1).rsquared;
+    r22 = S.(subject).(m2).rsquared; 
+    iix = max(r21, r22) > 0;
+    r21 = r21(iix);
+    r22 = r22(iix);
+    fprintf('%s: %02.2f %% of units better explained by %s than %s\n', subject, mean(r22 > r21)*100, m2, m1)
+
+    plot(r21, r22, '.', 'Color', cmap(6,:))
+    hold on
+    l = refline(1, 0); l.Color = 'k';
+    xlabel('$r^2$ (Stimulus Only)', 'Interpreter', 'Latex')
+    ylabel('$r^2$ (Stimulus + Running)', 'Interpreter', 'latex')
+    plot.offsetAxes(gca)
+
+    
+    subplot(1,2,2)
+    m1 = 'RunNoGain';
+    m2 = 'DriftNoGain';
+    r21 =  S.(subject).(m1).rsquared;
+    r22 = S.(subject).(m2).rsquared; 
+    iix = max(r21, r22) > 0;
+    r21 = r21(iix);
+    r22 = r22(iix);
+    fprintf('%s: %02.2f %% of units better explained by %s than %s\n', subject, mean(r22 > r21)*100, m2, m1)
+
+    plot(r21, r22, '.', 'Color', cmap(6,:))
+
+    hold on
+    l = refline(1, 0); l.Color = 'k';
+    xlabel('$r^2$ (Stimulus + Running)', 'Interpreter', 'Latex')
+    ylabel('$r^2$ (Stimulus + Drift)', 'Interpreter', 'latex')
+    
+    xlim([-.1 1])
+    ylim([-.1 1])
+    plot.offsetAxes(gca)
+
+    plot.formatFig(gcf, [4,2], 'nature')
+    saveas(gcf, fullfile(figdir, sprintf('regression_%s.pdf', subject)))
+
+    figure(10+isubj); clf
+    cmap = getcolormap(subject, false);
+
+
+    subplot(1,2,1)
+    m1 = 'RunNoGain';
+    m2 = 'RunningGainNoDrift';
+    r21 =  S.(subject).(m1).rsquared;
+    r22 = S.(subject).(m2).rsquared; 
+    iix = max(r21, r22) > 0;
+    r21 = r21(iix);
+    r22 = r22(iix);
+    fprintf('%s: %02.2f %% of units better explained by %s than %s\n', subject, mean(r22 > r21)*100, m2, m1)
+
+    plot(r21, r22, '.', 'Color', cmap(6,:))
+    hold on
+    l = refline(1, 0); l.Color = 'k';
+    xlabel('$r^2$ (Running (Additive))', 'Interpreter', 'Latex')
+    ylabel('$r^2$ (Running (Gain))', 'Interpreter', 'latex')
+    
+    
+    
+    subplot(1,2,2)
+    m1 = 'DriftNoGain';
+    m2 = 'SlowDrift';
+    r21 =  S.(subject).(m1).rsquared;
+    r22 = S.(subject).(m2).rsquared; 
+    iix = max(r21, r22) > 0;
+    r21 = r21(iix);
+    r22 = r22(iix);
+    fprintf('%s: %02.2f %% of units better explained by %s than %s\n', subject, mean(r22 > r21)*100, m2, m1)
+
+    plot(r21, r22, '.', 'Color', cmap(6,:))
+
+    hold on
+    l = refline(1, 0); l.Color = 'k';
+    xlabel('$r^2$ (Drift (Additive))', 'Interpreter', 'Latex')
+    ylabel('$r^2$ (Drift (Gain))', 'Interpreter', 'latex')
+    
+    xlim([-.1 1])
+    ylim([-.1 1])
+end
+%%
+
+% i = i + 1;
+i = 1;
+m1 = 'RunningGainNoDrift';
+m2 = 'DriftNoGain';
+
+goodcc = find(S.(subject).Stim.rsquared>.2);
+
+r21 = S.(subject).(m1).rsquared(goodcc);
+r22 = S.(subject).(m2).rsquared(goodcc);
+
+
+figure(1); clf
+plot(r21, r22, '.')
+
+[~, ind] = sort(r22-r21, 'descend');
+
+unitlist = goodcc(ind);
+
+%%
+
+figure(2); clf
+subplot(2, 1, 1)
+plot(rpred{cids(i)}.data.R, 'k'); hold on
+plot(rpred{cids(i)}.(m1).Rpred, 'r')
+plot(rpred{cids(i)}.(m1).Gdrive, 'g')
+title(rpred{cids(i)}.(m1).Rsquared)
+
+subplot(2,1,2)
+plot(rpred{cids(i)}.data.R, 'k'); hold on
+plot(rpred{cids(i)}.(m2).Rpred, 'r')
+plot(rpred{cids(i)}.(m2).Gdrive, 'g')
+title(rpred{cids(i)}.(m2).Rsquared)
+
+
+%%
+
+subject = 'marmoset';
+D = load_subject(subject);
 D.subj = subject;
-fname = fullfile(fout, sprintf('%s_%d.mat', D.subj, unitId));
-if exist(fname, 'file')
-    load(fname)
-else
-    do_regression_ss(D, unitId, fout);
-    load(fname)
+cids = S.(subject).Stim.cids;
+%% refit this unti
+i = 1; %i + 1;
+
+unitId = cids(unitlist(i));
+[Rpred_indiv, opts] = do_regression_ss(D, unitId, fout, true);
+
+rpred{cids(i)} = Rpred_indiv;
+
+m1 = 'DriftNoGain';
+
+%%
+m2 = 'DriftNoGain';
+m1 = 'RunNoGain';
+
+figure(11); clf
+cmap = getcolormap(subject, false);
+
+NT = numel(Rpred_indiv.data.R);
+bctrs = linspace(0, NT, opts.ntents);
+Bt = tent_basis((1:NT)', bctrs);
+xd = [1 min(1200,NT)];
+
+directions = unique(Rpred_indiv.data.direction);
+nd = numel(directions);
+
+% stimulus condition
+axes('Position', [.1 .82, .7 .1])
+% plot(Rpred_indiv.data.direction, '.k')
+plot.raster(1:NT, Rpred_indiv.data.direction, 22);
+set(gca, 'YTick', 0:90:max(directions))
+ylabel('Direction')
+set(gca, 'box', 'off', 'XTickLabel', '')
+xlim(xd)
+ylim([0 max(directions)])
+
+% stimulus weights
+axes('Position', [.85, .82, .12, .1])
+w = mean(Rpred_indiv.(m1).Stim.weights,2);
+w = reshape(w, nd, []);
+for i = 1:size(w,2)
+    plot(directions, w(:,i), 'Color', cmap(i*2,:)); hold on
 end
+set(gca, 'XTick', 0:90:max(directions))
+xlim([0 max(directions)])
+set(gca, 'box', 'off')
+labels = arrayfun(@(x) sprintf('%d cyc/deg', x), unique(Rpred_indiv.data.freq), 'uni', 0);
+legend(labels{:})
 
-%%
-iix = Rpred_indiv.data.indices;
-figure(1); clf
+% running speed
+axes('Position', [.1 .75, .7 .05])
+plot(Rpred_indiv.data.runspeed, 'Color', repmat(.5, 1, 3))
+ylabel('Running Speed (cm/s)')
+set(gca, 'box', 'off', 'XTickLabel', '')
+xlim(xd)
 
-models2compare = {'stimsac', 'stimrunsac', 'RunningGain', 'DriftGain', 'PupilGain'};
-nmodels = numel(models2compare);
-for imodel = 1:nmodels
-    subplot(nmodels, 1, imodel)
-modelname = models2compare{imodel};
-plot(Rpred_indiv.data.Robs(iix), 'k'); hold on
-plot(Rpred_indiv.(modelname).Rpred(iix), 'r')
-if isfield(Rpred_indiv.(modelname), 'Gdrive')
-    plot(Rpred_indiv.(modelname).Gdrive(iix), 'g')
+
+axes('Position', [.1 .67, .7 .05])
+clrs = gray(size(Bt,2)+10);
+clrs(1:2,:) = [];
+for i = 1:size(Bt,2)
+    plot(Bt(:,i), 'Color', clrs(i,:)); hold on
 end
-title(sprintf('%s: r2:%02.3f, rho:%02.3f', modelname, Rpred_indiv.(modelname).Rsquared, Rpred_indiv.(modelname).CC))
-end
+set(gca, 'box', 'off', 'XTickLabel', '')
+xlim(xd)
+
+axes('Position', [.1 .57, .7 .05])
+plot(Rpred_indiv.(m1).Stim.rpred, 'Color', 'k')
+set(gca, 'box', 'off', 'XTickLabel', '')
+xlim(xd)
+
+axes('Position', [.1 .47, .7 .05])
+plot(Rpred_indiv.(m1).RunSpeed.rpred, 'Color', 'k')
+set(gca, 'box', 'off', 'XTickLabel', '')
+xlim(xd)
+
+axes('Position', [.1 .4, .7 .05])
+clrs = gray(size(Bt,2));
+% w = mean(Rpred_indiv.(m2).Drift.weights,2);
+% for i = 1:size(Bt,2)
+%     plot(bctrs(i)*[1 1], [0 w(i)], 'k')
+%     plot(Bt(:,i)*w(i), 'Color', clrs(i,:)); hold on
+% end
+% plot(Bt*w, 'Color', 'k'); hold on
+plot(Rpred_indiv.(m2).Drift.rpred, 'k')
+set(gca, 'box', 'off', 'XTickLabel', '')
+xlim(xd)
+
+
+axes('Position', [.1 .28, .7 .1])
+stairs(Rpred_indiv.data.R, 'k'); hold on
+plot(Rpred_indiv.(m1).Rpred)
+ylabel('Firing Rate')
+xlim(xd)
+title(Rpred_indiv.(m1).Rsquared)
+set(gca, 'box', 'off', 'XTickLabel', '')
+
+axes('Position', [.1 .12, .7 .1])
+stairs(Rpred_indiv.data.R, 'k'); hold on
+plot(Rpred_indiv.(m2).Rpred)
+ylabel('Firing Rate')
+xlim(xd)
+title(Rpred_indiv.(m2).Rsquared)
+set(gca, 'box', 'off', 'XTick', 0:100:200)
+
+
+xlabel('Trial')
+plot.formatFig(gcf, [4 8], 'nature')
+saveas(gcf, fullfile(figdir, sprintf('regression_example_%s_%d.pdf', subject, unitId)))
+% , plot(Rpred_indiv.(m1).Drift.weights)
+
 
 %%
-D.subj = 'marmoset';
-% fname = fullfile(fout, sprintf('%s_%d.mat', D.subj, unitId));
-% do_regression_ss(D, unitId, fout);
-% load(fname)
+unitId = cids(i);
 
-%%
-[Stim, Robs] = bin_spikes_as_trials(D, unitId, 'plot', true, 'binsize', 1/60, 'win', [-.2, .2]);
+figure(10); clf
+subplot(2, 1, 1)
+plot(rpred{cids(i)}.data.R, 'k'); hold on
+plot(rpred{cids(i)}.(m1).Rpred, 'r')
+plot(rpred{cids(i)}.(m1).Gdrive, 'g')
+title(rpred{cids(i)}.(m1).Rsquared)
 
-opts.spike_smooth = 5;
+subplot(2,1,2)
+plot(rpred{cids(i)}.data.R, 'k'); hold on
+plot(rpred{cids(i)}.(m2).Rpred, 'r')
+plot(rpred{cids(i)}.(m2).Gdrive, 'g')
+title(rpred{cids(i)}.(m2).Rsquared)
 
-Robs = filtfilt(ones(opts.spike_smooth,1)/opts.spike_smooth, 1, Robs);
-Robs = Robs(:);
 
-figure(1); clf
-plot(Robs(iix)); hold on
-plot(Rpred_indiv.data.Robs(iix))
 
-%%
+%% fit example unit and show how the model works
+
 %   stim:      {StimDir, StimSpeed, StimFreq};
 %   robs:      Binned spikes;
 %   behavior:  {runSpeed, GratPhase, PupilArea, Fixations};
-[stim, robs, behavior, unitopts] = bin_ssunit(D, unitId);
+
+[stim, robs, behavior, unitopts] = bin_ssunit(D, unitId, 'plot', false);
 
 direction = stim{1};
 speed = stim{2};
 freq = stim{3};
-runspeed = nanmean(behavior{1},2); %#ok<*NANMEAN> 
+runspeed = nanmean(behavior{1},2); %#ok<*NANMEAN>
 pupil = nanmean(behavior{3},2);
 
 good_ix = ~(isnan(direction) | isnan(runspeed) | isnan(pupil));
@@ -882,7 +1017,7 @@ k = 1;
 
 % add additional covariates
 label = 'Drift';
-num_tents = 10;
+num_tents = 20;
 regLabels = [regLabels {label}];
 k = k + 1;
 Btents = tent_basis( (1:nt)', linspace(0, nt, num_tents));
@@ -909,46 +1044,58 @@ k = k + 1;
 regIdx = [regIdx k];
 fullR = [fullR pupil];
 
-
-%%
-
 opts = struct();
-opts.randomize_folds = false;
-opts.folds = 20;
+opts.randomize_folds = true;
+opts.folds = 5;
 
-xidxs = xvalidationIdx(nt, opts.folds, opts.randomize_folds);
+xidxs = regression.xvalidationIdx(nt, opts.folds, opts.randomize_folds);
 
 % restLabels = {{'RunSpeed'} {'Drift'} {'IsRun'}};
-restLabels = {{'RunSpeed'}, {'Drift'}, {'IsRun'}};
+restLabels = {{'RunSpeed', 'Drift'}, {'Drift'}, {'IsRun'}};
 GainLabels = {'RunSpeed', 'Drift', 'IsRun'};
 StimLabels = {'Stim', 'Stim', 'Stim'};
 
-iModel = 2;
-restLabel = restLabels{iModel};
-GainLabel = GainLabels{iModel};
-StimLabel  = StimLabels{iModel};
+[rho, pval] = corr(R, runspeed, 'Type', 'Spearman');
 
-Rpred =  nan(size(R));
-Gdrive = nan(size(R));
-for i = 1:opts.folds
-    nlfun = @nlfuns.expfun;
+Rpred =  nan(size(R,1),3);
+Gdrive = nan(size(R,1),3);
+
+for iModel = 1:3
+    restLabel = restLabels{iModel};
+    GainLabel = GainLabels{iModel};
+    StimLabel  = StimLabels{iModel};
+
+
+    for ifold = 1:opts.folds
+        
+        [Betas, Gain, Ridge, Rhat, Lgain, Lfull, gdrive] = AltLeastSqGainModelFmin(fullR, R, xidxs{ifold,1}, regIdx, regLabels, StimLabel, GainLabel, restLabel, [],[],@nlfuns.logexp1);
+%         [Betas, Gain, Ridge, Rhat, Lgain, Lfull, gdrive] = AltLeastSqGainModel(fullR, R, xidxs{ifold,1}, regIdx, regLabels, StimLabel, GainLabel, restLabel);
+
+        Rpred(xidxs{ifold,2}, iModel) = Rhat(xidxs{ifold,2});
+        Gdrive(xidxs{ifold,2}, iModel) = gdrive(xidxs{ifold,2});
+    end
+
+
+    figure(iModel); clf
+    subplot(3,1,1)
+    plot(R, 'k'); hold on
+    plot(runspeed, 'r')
+    xlabel('Trial')
+    title(['$\rho$ = ' num2str(rho,3) ', p= ' num2str(pval, 3)], 'Interpreter', 'latex')
     
+    subplot(3,1,2)
+    plot(R, 'k')
+    hold on
+    plot(Rpred(:, iModel), 'r')
+    title(rsquared(R, Rpred(:,iModel)))
+    subplot(3,1,3)
+    plot(Gdrive(:, iModel), 'g'); hold on
+    plot(runspeed/max(runspeed)*max(Gdrive(:, iModel)), 'k');
+    
+    [rhomod, pmod] = corr(Rpred(:, iModel), runspeed, 'Type', 'Spearman');
+    title(['$\rho$ = ' num2str(rhomod,3) ', p= ' num2str(pmod, 3)], 'Interpreter', 'latex')
 
-    [Betas, Gain, Ridge, Rhat, Lgain, Lfull, gdrive] = AltLeastSqGainModel(fullR, R, xidxs{i,1}, regIdx, regLabels, StimLabel, GainLabel, restLabel);
-
-    Rpred(xidxs{i,2}) = Rhat(xidxs{i,2});
-    Gdrive(xidxs{i,2}) = gdrive(xidxs{i,2});
 end
-
-
-figure(1); clf
-subplot(3,1,1:2)
-plot(R, 'k')
-hold on
-plot(Rpred, 'r')
-subplot(3,1,3)
-plot(Gdrive, 'g')
-rsquared(R, Rhat)
 
 %%
 

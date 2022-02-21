@@ -53,11 +53,9 @@ for isubj = 1:nsubjs
         rho = cellfun(@(x) x.rho(ipc), RunCorr.(subject)(sessix));
         pval = cellfun(@(x) x.pval(ipc), RunCorr.(subject)(sessix));
         rhos{isubj} = rho;
-%         if nsubjs==3
+
         subplot(nsubjs, npcs, (isubj-1)*npcs + ipc)
-%         else
-%             subplot(npcs, nsubjs, (ipc-1)*nsubjs + isubj)
-%         end
+
         histogram(rho, 'binEdges', linspace(-1, 1, 30), 'FaceColor', cmap(2,:), 'EdgeColor', 'none', 'FaceAlpha', 1); hold on
         histogram(rho(pval < 0.05), 'binEdges', linspace(-1, 1, 30), 'FaceColor', cmap(6,:), 'EdgeColor', 'none', 'FaceAlpha', 1);
         plot(median(rho), max(ylim)*1.1, 'v', 'Color', cmap(6,:), 'MarkerFaceColor', cmap(6,:))
@@ -340,16 +338,6 @@ for isubj = 1:nsubjs
 
 
         figure(isubj*100 + i); clf
-%         
-%         [I, xax, yax] = plot.kdeplot(runspeed(iix), runhat(iix), 'binsize', .2, 'sig', [1 1]);
-%         imagesc(xax, yax, I); colormap(cmap)
-%         axis xy
-%         hold on
-%         
-%         
-% %         axis xy
-%         plot.distributions(round(runspeed), runhat, 'bins', linspace(0, max(runspeed), 100), 'Color', cmap(2,:));
-%         hold on
         
         iix = runspeed >= 0 & runhat >=0;
         plot(runspeed(iix), runhat(iix), 'ow', 'MarkerFaceColor', cmap(6,:), 'MarkerSize', 2); hold on

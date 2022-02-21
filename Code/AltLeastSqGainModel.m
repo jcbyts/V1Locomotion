@@ -34,8 +34,6 @@ end
 xstim = X(train_inds,stim_idx);
 xrest = X(train_inds,rest_idx);
 Ytrain = Y(train_inds);
-% SSfull0 = sum( (Ytrain - mean(Ytrain)).^2);
-g = 1 + xgain*g0;
 
 if ~exist('Lgain', 'var')
     Lgain = nan;
@@ -44,6 +42,26 @@ end
 if ~exist('Lfull', 'var')
     Lfull = nan;
 end
+
+if isempty(xgain)
+
+    [Lfull, Betas] = ridgeMML(Ytrain, [xstim xrest], false, Lfull);
+    Ridge = Lfull;
+    xstim = X(:,stim_idx);
+    xrest = X(:,rest_idx);
+
+
+    Rhat = [xstim xrest]*Betas(2:end) + Betas(1);
+    Gain = [nan nan];
+    Lgain = nan;
+    g = nan(size(Rhat));
+    return
+else
+    g = 1 + xgain*g0;
+    g = max(g, 0);
+end
+
+
 
 [Lfull, Bfull] = ridgeMML(Ytrain, [xstim.*g xrest], false, Lfull);
 
@@ -65,6 +83,7 @@ while true
         w0 = Bgain(2+gain_rest_idx);
         xgain = X(train_inds,gain_idx)*w0;
         g0 = [Bgain(2) 1];
+        g = 1 + xgain;
     else
 
         [Lgain, Bgain] = ridgeMML(Ytrain, [stimproj stimproj.*xgain xrest], false, Lgain);
@@ -115,6 +134,6 @@ else
 end
 xstim = X(:,stim_idx);
 xrest = X(:,rest_idx);
-g = Gain(1) + xgain*Gain(2);
+g = max(Gain(1) + xgain*Gain(2), 0);
 
 Rhat = [xstim.*g xrest]*Betas(2:end) + Betas(1);

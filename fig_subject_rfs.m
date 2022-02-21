@@ -4,7 +4,7 @@ figdir = 'Figures/HuklabTreadmill/manuscript/';
 fpath = getpref('FREEVIEWING', 'HUKLAB_DATASHARE');
 subjs = {'gru', 'brie', 'allen'};
 
-% plot subset of RFs
+%% plot subset of RFs -- this is what is used in the figure
 xd = [-50 50];
 yd = [-40 40];
 for isubj = 1:numel(subjs)
