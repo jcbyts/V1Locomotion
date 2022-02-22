@@ -1,7 +1,12 @@
 %% paths
 fpath = getpref('FREEVIEWING', 'HUKLAB_DATASHARE');
 figdir = 'Figures/HuklabTreadmill/manuscript/';
-fid = fopen('fig_session_corr.txt', 'w');
+
+if ~exist('output', 'dir')
+    mkdir('output')
+end
+% where the analyese will print to
+fid = fopen('output/fig_session_corr.txt', 'w');
 
 %% Basic summary of session running
 thresh = 3; % running threshold
@@ -23,12 +28,12 @@ for isubj = 1:nsubjs
     sessnums = unique(D.sessNumTread);
     nsess = numel(sessnums);
     
-    fprintf(fid,"%d sessions\n", nsess)
+    fprintf(1,"%d sessions\n", nsess);
     
     RunCorr.(subject) = cell(nsess,1);
     
     for isess = 1:nsess
-        fprintf(fid,'%d/%d session\n', isess, nsess)
+        fprintf(1,'%d/%d session\n', isess, nsess);
         RunCorr.(subject){isess} = running_vs_spikePC(D, sessnums(isess));
     end
 end
@@ -41,6 +46,9 @@ nboot = 500;
 
 rhos = cell(nsubjs,1);
 
+fprintf(fid, '*************\n*************\n\nRunning sessionwise analyses with running threshold of %d cm/s\n\n', thresh);
+fprintf(fid, 'Histograms of Spearman rank correlation between running and PC 1\n\n');
+
 for isubj = 1:nsubjs
     subject = subjects{isubj};
     cmap = getcolormap(subject,false);
@@ -48,7 +56,8 @@ for isubj = 1:nsubjs
     nt = cellfun(@(x) numel(x.runningspeed), RunCorr.(subject));
     fracrun = cellfun(@(x) mean(x.runningspeed > thresh), RunCorr.(subject));
     sessix = nt > trial_thresh & fracrun > frac_run_thresh(1) & fracrun < frac_run_thresh(2);
-
+    
+    
     for ipc = 1:npcs
         rho = cellfun(@(x) x.rho(ipc), RunCorr.(subject)(sessix));
         pval = cellfun(@(x) x.pval(ipc), RunCorr.(subject)(sessix));
@@ -58,15 +67,16 @@ for isubj = 1:nsubjs
 
         histogram(rho, 'binEdges', linspace(-1, 1, 30), 'FaceColor', cmap(2,:), 'EdgeColor', 'none', 'FaceAlpha', 1); hold on
         histogram(rho(pval < 0.05), 'binEdges', linspace(-1, 1, 30), 'FaceColor', cmap(6,:), 'EdgeColor', 'none', 'FaceAlpha', 1);
-        plot(median(rho), max(ylim)*1.1, 'v', 'Color', cmap(6,:), 'MarkerFaceColor', cmap(6,:))
+        plot(median(rho), max(ylim)*1.1, 'v', 'Color', cmap(6,:), 'MarkerFaceColor', cmap(6,:), 'MarkerSize', 3)
         xlim([-1 1])
         
         [p, ~, pstat] = signrank(rho);
-        fprintf(fid, '%s, median=%02.3f, pval=%0.5f (rank=%02.5f)\n', subject, median(rho),p,pstat.signedrank);
+        
+        fprintf(fid, '%s, median (across sessions) =%02.3f, pval=%d (rank=%02.5f)\n\n', subject, median(rho),p,pstat.signedrank);
 
         plot.offsetAxes(gca)
         ylabel('# sessions')
-        text(.2, .7*max(ylim), sprintf('%02.3f (p = %02.5f, %d, %d)', median(rho), p, pstat.signedrank, numel(rho)), 'FontSize',6, 'FontName', 'Helvetica')
+        text(.2, .7*max(ylim), sprintf('%02.3f (p = %d, %d, %d)', median(rho), p, pstat.signedrank, numel(rho)), 'FontSize',6, 'FontName', 'Helvetica')
     end
 end
 
@@ -98,6 +108,7 @@ figure(1); clf
 
 % subjects = {'allen', 'gru', 'brie'};
 fracsrun = cell(nsubjs,1);
+fprintf(fid, 'Histograms of "fraction running" on each session\n\n');
 
 for isubj = 1:nsubjs
     subject = subjects{isubj};
@@ -110,12 +121,12 @@ for isubj = 1:nsubjs
     subplot(nsubjs, 1, isubj)
     histogram(fracrun, 'binEdges', linspace(0, 1, 20), 'FaceColor', cmap(2,:), 'EdgeColor', 'none', 'FaceAlpha', 1); hold on
     histogram(fracrun(sessix), 'binEdges', linspace(0, 1, 20), 'FaceColor', cmap(6,:), 'EdgeColor', 'none', 'FaceAlpha', 1);
-    plot(median(fracrun(sessix)), max(ylim)*1.1, 'v', 'Color', cmap(6,:), 'MarkerFaceColor', cmap(6,:))
+    plot(median(fracrun(sessix)), max(ylim)*1.1, 'v', 'Color', cmap(6,:), 'MarkerFaceColor', cmap(6,:), 'MarkerSize', 3)
     xlim([0 1])
     fracsrun{isubj} = fracrun;
 
     ci = bootci(nboot, @median, fracrun(sessix));
-    fprintf(fid,'%s, median=%02.3f, [%02.3f, %02.3f]\n', subject, median(rho),ci(1), ci(2));
+    fprintf(fid,'%s, median (across sessions)=%02.3f, [%02.3f, %02.3f]\n', subject, median(rho),ci(1), ci(2));
 
     plot.offsetAxes(gca)
     ylabel('# sessions')
@@ -153,6 +164,7 @@ r2_all = [];
 fracrun_all = [];
 subj_id = [];
 
+fprintf(fid, 'Histograms of running decoding across sessions\n\n');
 % get bins for plotting
 plot_bins = linspace(-.5, 1, 20);
 for isubj = 1:nsubjs
@@ -166,15 +178,15 @@ for isubj = 1:nsubjs
             
     subplot(nsubjs, npcs, (isubj-1)*npcs + 1)
     histogram(r2, 'binEdges', plot_bins, 'FaceColor', cmap(6,:), 'EdgeColor', 'none', 'FaceAlpha', 1); hold on
-    plot(median(r2), max(ylim)*1.1, 'v', 'Color', cmap(6,:), 'MarkerFaceColor', cmap(6,:))
+    plot(median(r2), max(ylim)*1.1, 'v', 'Color', cmap(6,:), 'MarkerFaceColor', cmap(6,:), 'MarkerSize', 3)
     xlim(plot_bins([1 end]))
     
     [p, ~, pstat] = signrank(r2);
-    fprintf(fid,'%s, median=%02.3f, pval=%0.5f (rank=%02.5f)\n', subject, median(r2),p,pstat.signedrank);
+    fprintf(fid,'%s, median=%02.3f, pval=%d (rank=%02.5f)\n', subject, median(r2),p,pstat.signedrank);
     
     plot.offsetAxes(gca)
     ylabel('# sessions')
-    text(.2, .7*max(ylim), sprintf('%02.3f (p = %02.5f, %d, %d)', median(r2), p, pstat.signedrank, numel(r2)), 'FontSize',6, 'FontName', 'Helvetica')
+    text(.2, .7*max(ylim), sprintf('%02.3f (p = %d, %d, %d)', median(r2), p, pstat.signedrank, numel(r2)), 'FontSize',6, 'FontName', 'Helvetica')
     if p < 0.05
         text(median(r2), .95*max(ylim), '*', 'FontSize', 12)
     end
@@ -242,7 +254,7 @@ else
 end
 
 [pval, ~, stats] = ranksum(r2_all(subj_id==1), r2_all(subj_id==2));
-fprintf(fid,'Testing whether %s and %s Decoding Performance come from distributions with different medians\n', subjects{:});
+fprintf(fid,'\nTesting whether %s and %s Decoding Performance come from distributions with different medians\n', subjects{:});
 if pval < 0.05
     fprintf(fid,'%s and %s significantly differ\n', subjects{:});
     fprintf(fid,'Wilcoxon Rank Sum Test\n');
@@ -254,6 +266,7 @@ else
     fprintf(fid,'p=%02.7f, ranksum=%d\n', pval, stats.ranksum );
 end
 
+fclose(fid);
 
 %% plot individual sessions
 
@@ -371,4 +384,4 @@ end
 
 close all
 
-fclose(fid);
+disp('Done with fig_session_corr.m')

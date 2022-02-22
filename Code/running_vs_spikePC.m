@@ -89,7 +89,7 @@ iix = ~isnan(runningspeed);
 nt = numel(runningspeed);
 
 
-xidxs = xvalidationIdx(nt, opts.folds, opts.randomize_folds);
+xidxs = regression.xvalidationIdx(nt, opts.folds, opts.randomize_folds);
 yhat = nan(nt,1);
 
 what = nan(size(r,2)+1,opts.folds);

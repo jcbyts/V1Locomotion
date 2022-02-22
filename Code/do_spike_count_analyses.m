@@ -442,4 +442,6 @@ for cc = 1:NC
     Stat.bootTestMedianfrStim(cc) = bstats.propgt;
 end
 
+Stat.opts = opts;
+
 

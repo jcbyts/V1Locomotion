@@ -61,7 +61,7 @@ plot(t0 + [0 5], -60*[1 1], 'k', 'Linewidth', 5)
 axis off
 
 %% save figure
-plot.fixfigure(gcf, 12, [8 8])
+plot.formatFig(gcf, [8 8])
 title(strrep(flist(id).name, '_', ' '))
 saveas(gcf, fullfile(figdir, sprintf('session_%d.pdf', id)) )
 
