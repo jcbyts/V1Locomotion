@@ -1,3 +1,4 @@
+% NOTE: This script is under construction...
 
 %% paths
 fpath = getpref('FREEVIEWING', 'HUKLAB_DATASHARE');
@@ -5,32 +6,6 @@ figdir = 'Figures/HuklabTreadmill/manuscript/';
 
 subjects = {'mouse', 'marmoset'};
 nsubjs = numel(subjects);
-
-%% Load analyses from fig_main.m
-afname = 'output/MainAnalysisUnweighted.mat';
-if ~exist(afname, 'file')
-    error('fig_regression_analysis: you must run fig_main first output/MainAnalysisUnweighted.mat is in your path')
-end
-Stat = load(afname);
-
-%% check significant units with regression
-fid = 1;
-fout = fullfile(getpref('FREEVIEWING', 'HUKLAB_DATASHARE'), 'regression_ss');
-
-isubj = 1;
-subject = subjects{isubj};
-
-D = load_subject(subject);
-D.subj = subject;
-
-sigunits = Stat.(subject).cid(Stat.(subject).runrhop < 0.05);
-
-%%
-parfor cc = 1:numel(sigunits)
-    cid = sigunits(cc);
-    do_regression_ss(D, cid, fout, true)
-end
-
 
 %%
 fout = fullfile(getpref('FREEVIEWING', 'HUKLAB_DATASHARE'), 'regression_ss');

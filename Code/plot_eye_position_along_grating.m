@@ -10,7 +10,7 @@ end
 %% Get all relevant covariates
 Stim = convert_Dstruct_to_trials(D, 'bin_size', bin_size, 'pre_stim', .2, 'post_stim', .2);
 StimShuff = convert_Dstruct_to_trials(D, 'bin_size', bin_size, 'pre_stim', .2, 'post_stim', .2, 'shuffle', true);
-
+disp('Done coverting stimulus')
 %% plot
 fig = figure();
 set(gcf, 'Color', 'w')
@@ -27,9 +27,11 @@ nspeeds = numel(speeds);
 label = {};
 S = struct();
 
+trialix = abs(nanmean(Stim.tread_speed)) < 3;
+
 clear h
 for i = 1:nspeeds
-    iix = max(Stim.speed_grating)==speeds(i);
+    iix = max(Stim.speed_grating)==speeds(i) & trialix;
     m = nanmean(Stim.eye_pos_proj_adjusted(:, iix),2);
     sd = nanstd(Stim.eye_pos_proj_adjusted(:, iix), [], 2)/sqrt(sum(iix));
     
@@ -48,7 +50,7 @@ for i = 1:nspeeds
 end
 
 if exist('StimShuff', 'var')
-    iix = max(Stim.speed_grating)>0;
+    iix = max(Stim.speed_grating)>0 & trialix;
     m = nanmean(StimShuff.eye_pos_proj_adjusted(:, iix),2);
     sd = nanstd(StimShuff.eye_pos_proj_adjusted(:, iix), [], 2)/sqrt(sum(iix));
     m = interp1(find(~isnan(m)), m(~isnan(m)), 1:numel(m));
