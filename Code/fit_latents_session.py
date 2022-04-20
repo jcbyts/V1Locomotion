@@ -45,39 +45,20 @@ class Encoder(nn.Module):
         regpen = self.reg_placeholder
         if hasattr(self, 'stim'):
             regpen = self.gamma_stim * torch.mean(torch.sum(self.stim.weight**2, dim=1).sqrt())
-            regpen = regpen + 10*self.gamma_stim * torch.mean(self.stim.weight.mean(dim=1)**2)
+            # regpen = regpen + 10*self.gamma_stim * torch.mean(self.stim.weight.mean(dim=1)**2)
         if hasattr(self, 'latent_gain'):
             regpen = regpen + self.gamma_latents * torch.mean(self.latent_gain.weight**2).sqrt()
-            # # orthogonality penalty on latents
-            # z = self.latent_gain(batch['robs'])
-            # w = (z.T @ z).abs()
-            # orth_pen = w.sum() - w.trace()
-            # regpen = regpen + self.gamma_orth * orth_pen
+ 
         if hasattr(self, 'latent_offset'):
             regpen = regpen + self.gamma_latents * torch.mean(self.latent_offset.weight**2).sqrt()
-            # # orthogonality penalty on latents
-            # z = self.latent_offset(batch['robs'])
-            # w = (z.T @ z).abs()
-            # orth_pen = w.sum() - w.trace()
-            # regpen = regpen + self.gamma_orth * orth_pen
 
         if hasattr(self, 'readout_offset'):
             regpen = regpen + self.gamma_latents * torch.mean(self.readout_offset.linear.weight**2).sqrt()
-            # regpen = regpen + self.gamma_readout * torch.mean(self.relu(-self.readout_offset.linear.weight))
-            # zh = self.latent_offset(batch['robs'])
-            # h = self.readout_offset(zh)
-            # regpen = regpen + self.gamma_readout * torch.sqrt(torch.sum(h.mean(dim=0)**2))
+            regpen = regpen + self.gamma_readout * torch.mean(self.relu(-self.readout_offset.linear.weight))
 
         if hasattr(self, 'readout_gain'):
             regpen = regpen + self.gamma_latents * torch.mean(self.readout_gain.linear.weight**2).sqrt()
-            # regpen = regpen + self.gamma_readout * torch.mean(self.relu(-self.readout_gain.linear.weight))
-
-            # readout gain must be zero mean (i.e., 1.0 on average)
-            # zg = self.latent_gain(batch['robs'])
-            # zg = self.gainnl(zg)
-            # g = self.readout_gain(zg)
-            # regpen = self.gamma_readout * torch.sqrt(torch.sum(g.mean(dim=0)**2))
-            # regpen = regpen + self.gamma_readout * torch.sum(self.relu(-self.readout_gain.linear.weight)**2).sqrt()
+            regpen = regpen + self.gamma_readout * torch.mean(self.relu(-self.readout_gain.linear.weight))
 
         return {'loss': loss + regpen, 'train_loss': loss, 'reg_loss': regpen}
 
@@ -116,11 +97,12 @@ class SharedGain(Encoder):
         self.name = 'LVM'
         self.act_func = getattr(nn, act_func)()
         self.stim_act_func = getattr(nn, stim_act_func)()
+        self.bias = nn.Parameter(torch.zeros(NC, dtype=torch.float32))
         self.gainnl = nn.ReLU()
         self.output_nl = getattr(nn, output_nonlinearity)()
 
         ''' stimulus processing '''
-        self.stim = nn.Linear(stim_dims, NC, bias=True)
+        self.stim = nn.Linear(stim_dims, NC, bias=False)
 
         ''' neuron drift '''
         if num_tents > 1:
@@ -130,11 +112,11 @@ class SharedGain(Encoder):
 
         ''' latent variable gain'''
         if include_gain:
-            self.latent_gain = nn.Linear(NC, num_latent, bias=True)
+            self.latent_gain = nn.Linear(NC, num_latent, bias=False)
             # self.latent_gain.weight.data[:] = 1/NC
 
             self.readout_gain = nn.Sequential()
-            self.readout_gain.add_module('linear', nn.Linear(num_latent, NC, bias=True))
+            self.readout_gain.add_module('linear', nn.Linear(num_latent, NC, bias=False))
             self.readout_gain.linear.weight.data[:] = .1
 
             if self.act_func is not None:
@@ -155,6 +137,7 @@ class SharedGain(Encoder):
     def forward(self, input):
 
         x = self.stim_act_func(self.stim(input['stim']))
+        x = x + self.bias
         
         if hasattr(self, 'latent_gain'):
             zg = self.latent_gain(input['robs'])
@@ -169,6 +152,10 @@ class SharedGain(Encoder):
 
         if self.drift is not None:
             x = x + self.drift(input['tents'])
+
+        
+
+        # x = self.output_nl(x)
         
         return x
         
@@ -219,9 +206,12 @@ def fit_session(fpath, apath, fname, aname):
     plt.plot(tents)
     plt.show()
 
+    robs = dat['robs'][trial_ix,:].astype(np.float32)
+    # robs /= np.std(robs, axis=0)
+
     data = {'runningspeed': torch.tensor(dat['runningspeed'][trial_ix], dtype=torch.float32),
         'pupilarea': torch.tensor(dat['pupilarea'][trial_ix], dtype=torch.float32),
-        'robs': torch.tensor(dat['robs'][trial_ix,:].astype(np.float32)),
+        'robs': torch.tensor(robs),
         'stim': torch.tensor(stim, dtype=torch.float32),
         'tents': torch.tensor(tents, dtype=torch.float32)}
 
@@ -269,10 +259,10 @@ def fit_session(fpath, apath, fname, aname):
 
     #% With LBFGS
     mod0 = SharedGain(stim_dims=nstim, NC=NC, num_tents=0, include_gain=False,
-            include_offset=False, output_nonlinearity='Identity',
+            include_offset=False, output_nonlinearity='ReLU',
             stim_act_func='Identity', act_func='Identity')
 
-    mod0.gamma_stim = 0.01
+    mod0.gamma_stim = 0
 
     optimizer = torch.optim.LBFGS(mod0.parameters(),
                     history_size=10,
@@ -288,7 +278,7 @@ def fit_session(fpath, apath, fname, aname):
         optimize_graph=True,
         log_activations=False,
         set_grad_to_none=False,
-        verbose=0)
+        verbose=2)
 
     trainer.fit(mod0, train_ds[:], val_ds[:], seed=1234)
     print("Done fitting stim")
@@ -307,10 +297,10 @@ def fit_session(fpath, apath, fname, aname):
 
     #% try with drift
     mod1 = SharedGain(stim_dims=nstim, NC=NC, num_tents=ntents, include_gain=False,
-        include_offset=False, output_nonlinearity='Identity',
+        include_offset=False, output_nonlinearity='ReLU',
         stim_act_func='Identity', act_func='Identity')
 
-    mod1.gamma_stim = 0.01
+    mod1.gamma_stim = 0
 
     optimizer = torch.optim.LBFGS(mod1.parameters(),
                     history_size=10,
@@ -346,6 +336,7 @@ def fit_session(fpath, apath, fname, aname):
     #% fit gain model
     def fit_gainmodel(mod1,
         nlatent=1,
+        ntents=0,
         include_offset=True,
         include_gain=True):
 
@@ -356,22 +347,24 @@ def fit_session(fpath, apath, fname, aname):
             include_offset=include_offset,
             include_gain=include_gain,
             stim_act_func='Identity',
-            output_nonlinearity='Identity')
+            output_nonlinearity='ReLU')
 
         mod2.gamma_stim = .001
-        mod2.gamma_latents = .01
+        mod2.gamma_latents = .1
         mod2.gamma_orth = 0
-        mod2.gamma_readout = .01
+        mod2.gamma_readout = .1
 
         mod2 = mod2.to(device)
-        mod2.stim.weight.data = mod1.stim.weight.data.clone() * 2 / 3
-        mod2.stim.bias.data = mod1.stim.bias.data.clone()
-        mod2.drift.weight.data = mod1.drift.weight.data.clone()
+        mod2.stim.weight.data = mod1.stim.weight.data.clone()
+        mod2.bias.data = mod1.bias.data.clone()
+        if ntents > 0:
+            mod2.drift.weight.data = mod1.drift.weight.data.clone()
+            mod2.drift.weight.requires_grad = False # freeze stimulus model first
         # mod2.drift.weight.data[:] = 0
 
         mod2.stim.weight.requires_grad = False # freeze stimulus model first
-        mod2.stim.bias.requires_grad = False # freeze stimulus model first
-        mod2.drift.weight.requires_grad = False # freeze stimulus model first
+        mod2.bias.requires_grad = False # freeze stimulus model first
+        
 
         #% Fit gain
         optimizer = torch.optim.LBFGS(mod2.parameters(),
@@ -392,18 +385,18 @@ def fit_session(fpath, apath, fname, aname):
 
         trainer.fit(mod2, train_ds[:], val_ds[:], seed=1234)
 
-        # # unfreeze
-        mod2.stim.weight.requires_grad = True # freeze stimulus model first
-        mod2.stim.bias.requires_grad = True # freeze stimulus model first
-        # mod2.drift.weight.requires_grad = True # freeze stimulus model first
+        # # unfreeze stimulus weights
+        # mod2.stim.weight.requires_grad = True # freeze stimulus model first
+        # # mod2.stim.bias.requires_grad = True # freeze stimulus model first
+        # # mod2.drift.weight.requires_grad = True # freeze stimulus model first
 
-        trainer.fit(mod2, train_ds[:], val_ds[:])
+        # trainer.fit(mod2, train_ds[:], val_ds[:])
         mod2.to(device)
         loss = mod2.training_step(train_ds[:])['loss'].item()
         val_loss = mod2.training_step(val_ds[:])['loss'].item()
         return mod2, loss, val_loss
 
-    def train_multistart(nlatent=1, nruns=10, include_offset=True, include_gain=True):
+    def train_multistart(nlatent=1, nruns=10, ntents=0, include_offset=True, include_gain=True):
 
         #% fit 10 runs
         from copy import deepcopy
@@ -412,7 +405,7 @@ def fit_session(fpath, apath, fname, aname):
         val_losses = []
 
         for i in range(nruns):
-            mod2, loss, val_loss = fit_gainmodel(mod1, nlatent=nlatent, include_offset=include_offset, include_gain=include_gain)
+            mod2, loss, val_loss = fit_gainmodel(mod1, nlatent=nlatent, ntents=ntents, include_offset=include_offset, include_gain=include_gain)
             mods.append(deepcopy(mod2))
             losses.append(loss)
             val_losses.append(val_loss)
@@ -475,7 +468,7 @@ def fit_session(fpath, apath, fname, aname):
     from copy import deepcopy
     ''' fit Affine model'''
     print("Fitting stim * gain + offset")
-    models, losses, vallosses = train_multistart(nlatent=1, nruns=10, include_offset=True, include_gain=True)
+    models, losses, vallosses = train_multistart(nlatent=1, nruns=10, ntents=ntents, include_offset=True, include_gain=True)
     bestid = np.nanargmin(vallosses)
     mod4 = deepcopy(models[bestid])
     moddict4 = eval_model(mod4, ds, val_ds)
@@ -505,6 +498,15 @@ def fit_session(fpath, apath, fname, aname):
     moddict3['valloss'] = np.asarray(vallosses)
     das['gain'] = moddict3
     print("Done")
+
+    nogain_inds = np.where(das['affine']['r2test'] < das['offset']['r2test'])[0]
+    mod5 = deepcopy(das['affine']['model'])
+    mod5.stim.weight.data[nogain_inds,:] = mod2.stim.weight.data[nogain_inds,:].clone()
+    mod5.readout_gain.linear.weight.data[nogain_inds] = 0
+    moddict5 = eval_model(mod5, ds, val_ds)
+    moddict5['model'] = mod5
+    moddict5['valloss'] = np.nan
+    das['affineadjust'] = moddict5
 
     # # pickle dataset
     import pickle

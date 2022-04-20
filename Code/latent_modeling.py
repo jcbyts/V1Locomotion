@@ -326,9 +326,9 @@ with open(apath + aname, 'rb') as f:
 
 import torch.nn.functional as F
 
-id = np.argmax(das['affine']['zgainav'].std(dim=0).numpy())
-zg = F.relu(1 + das['affine']['zgainav'][:,id].unsqueeze(1))
-zh = das['affine']['zoffsetav'].mean(dim=1).unsqueeze(1)
+id = np.argmax(das['affineadjust']['zgainav'].std(dim=0).numpy())
+zg = F.relu(1 + das['affineadjust']['zgainav'][:,id].unsqueeze(1))
+zh = das['affineadjust']['zoffsetav'].mean(dim=1).unsqueeze(1)
 nlatent = zg.shape[1]
 running = das['data']['running']
 pupil = das['data']['pupil']
@@ -374,10 +374,10 @@ r2test.append(das['stim']['r2test'].numpy())
 r2test.append(das['stimdrift']['r2test'].numpy())
 r2test.append(das['offset']['r2test'].numpy())
 r2test.append(das['gain']['r2test'].numpy())
-r2test.append(das['affine']['r2test'].numpy())
+r2test.append(das['affineadjust']['r2test'].numpy())
 plt.violinplot(r2test, showmeans=True)
 plt.title(subject + ' {}'.format(isess))
-plt.ylim(-.1, 1)
+plt.ylim(-1, 1)
 plt.show()
 
 
@@ -386,7 +386,7 @@ pupil = das['data']['pupil']
 
 # plt.plot(running)
 
-mod2 = das['affine']['model']
+mod2 = das['affineadjust']['model']
 
 plt.figure()
 plt.plot(mod2.stim.weight.T.detach().cpu())
@@ -395,8 +395,10 @@ plt.show()
 #%%
 
 import torch.nn.functional as F
-id = np.argmax(das['affine']['zgainav'].std(dim=0).numpy())
-zg = F.relu(1 + das['affine']['zgainav'][:,id].unsqueeze(1))
+sdg = das['affineadjust']['zgainav'].std(dim=0).numpy()
+
+id = np.argmin((sdg - np.mean(sdg))**2)
+zg = F.relu(1 + das['affineadjust']['zgainav'][:,id].unsqueeze(1))
 
 # zg = das['affine']['zgainav']
 zh = das['affine']['zoffsetav']
@@ -515,7 +517,7 @@ zg = F.relu(1 + das['affine']['zgainav']).numpy()
 
 s = np.std(zg, axis=0)
 inds = np.argsort(s)
-sortmode = 'none'
+sortmode = 'gain'
 if sortmode == 'none':
     inds = np.arange(len(inds))
 
