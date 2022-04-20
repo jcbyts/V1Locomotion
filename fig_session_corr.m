@@ -23,6 +23,7 @@ for isubj = 1:nsubjs
     subject = subjects{isubj};
 
     D = load_subject(subject, fpath);
+    D.subject = subject;
     cmap = getcolormap(subject,false);
 
     sessnums = unique(D.sessNumTread);
@@ -31,10 +32,14 @@ for isubj = 1:nsubjs
     fprintf(1,"%d sessions\n", nsess);
     
     RunCorr.(subject) = cell(nsess,1);
-    
+    opts = struct();
+    opts.save = true;
+    opts.prewin = 0;
+    opts.postwin = 0;
+
     for isess = 1:nsess
         fprintf(1,'%d/%d session\n', isess, nsess);
-        RunCorr.(subject){isess} = running_vs_spikePC(D, sessnums(isess));
+        RunCorr.(subject){isess} = running_vs_spikePC(D, sessnums(isess), opts);
     end
 end
 
@@ -385,3 +390,26 @@ end
 close all
 
 disp('Done with fig_session_corr.m')
+
+%% analyze correlation with pupil
+isubj = 2;
+subject = subjects{isubj};
+rho_pupil = cell2mat(cellfun(@(x) x.rho_pupil', RunCorr.(subject), 'uni', 0));
+rho_run = cell2mat(cellfun(@(x) x.rho', RunCorr.(subject), 'uni', 0));
+
+figure(isubj); clf
+[~, inds] = sort(rho_run(:,1));
+
+subplot(2,1,1)
+plot(rho_run(inds,:), '-o'); hold on
+plot(xlim, [0 0], 'k')
+ylim([-1 1])
+title('running')
+subplot(2,1,2)
+plot(rho_pupil(inds,:), 'o-'); hold on
+plot(xlim, [0 0], 'k--')
+ylim([-1 1])
+title('pupil')
+xlabel('Session #')
+
+plot.suplabel(subject, 't')

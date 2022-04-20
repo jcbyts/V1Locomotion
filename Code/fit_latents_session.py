@@ -1,5 +1,6 @@
 
 import os, sys
+from importlib_metadata import requires
 sys.path.insert(0, '/mnt/Data/Repos/')
 sys.path.append("../")
 
@@ -27,7 +28,7 @@ class Encoder(nn.Module):
         super().__init__()
 
         self.loss = nn.MSELoss()
-        self.gamma_stim = 0.01
+        self.gamma_stim = 0.001
         self.gamma_latents = 0.01
         self.gamma_orth = 0
         self.gamma_readout = 0.01
@@ -43,16 +44,17 @@ class Encoder(nn.Module):
         loss = self.loss(y_hat, y)
         regpen = self.reg_placeholder
         if hasattr(self, 'stim'):
-            regpen = self.gamma_stim * torch.sum(self.stim.weight**2).sqrt()
+            regpen = self.gamma_stim * torch.mean(torch.sum(self.stim.weight**2, dim=1).sqrt())
+            regpen = regpen + 10*self.gamma_stim * torch.mean(self.stim.weight.mean(dim=1)**2)
         if hasattr(self, 'latent_gain'):
-            regpen = regpen + self.gamma_latents * torch.sum(self.latent_gain.weight**2).sqrt()
+            regpen = regpen + self.gamma_latents * torch.mean(self.latent_gain.weight**2).sqrt()
             # # orthogonality penalty on latents
             # z = self.latent_gain(batch['robs'])
             # w = (z.T @ z).abs()
             # orth_pen = w.sum() - w.trace()
             # regpen = regpen + self.gamma_orth * orth_pen
         if hasattr(self, 'latent_offset'):
-            regpen = regpen + self.gamma_latents * torch.sum(self.latent_offset.weight**2).sqrt()
+            regpen = regpen + self.gamma_latents * torch.mean(self.latent_offset.weight**2).sqrt()
             # # orthogonality penalty on latents
             # z = self.latent_offset(batch['robs'])
             # w = (z.T @ z).abs()
@@ -60,11 +62,21 @@ class Encoder(nn.Module):
             # regpen = regpen + self.gamma_orth * orth_pen
 
         if hasattr(self, 'readout_offset'):
-            regpen = regpen + self.gamma_latents * torch.sum(self.readout_offset.linear.weight**2).sqrt()
-            regpen = regpen + self.gamma_readout * torch.sum(self.relu(-self.readout_offset.linear.weight))
+            regpen = regpen + self.gamma_latents * torch.mean(self.readout_offset.linear.weight**2).sqrt()
+            # regpen = regpen + self.gamma_readout * torch.mean(self.relu(-self.readout_offset.linear.weight))
+            # zh = self.latent_offset(batch['robs'])
+            # h = self.readout_offset(zh)
+            # regpen = regpen + self.gamma_readout * torch.sqrt(torch.sum(h.mean(dim=0)**2))
+
         if hasattr(self, 'readout_gain'):
-            regpen = regpen + self.gamma_latents * torch.sum(self.readout_gain.linear.weight**2).sqrt()
-            regpen = regpen + self.gamma_readout * torch.sum(self.relu(-self.readout_gain.linear.weight))
+            regpen = regpen + self.gamma_latents * torch.mean(self.readout_gain.linear.weight**2).sqrt()
+            # regpen = regpen + self.gamma_readout * torch.mean(self.relu(-self.readout_gain.linear.weight))
+
+            # readout gain must be zero mean (i.e., 1.0 on average)
+            # zg = self.latent_gain(batch['robs'])
+            # zg = self.gainnl(zg)
+            # g = self.readout_gain(zg)
+            # regpen = self.gamma_readout * torch.sqrt(torch.sum(g.mean(dim=0)**2))
             # regpen = regpen + self.gamma_readout * torch.sum(self.relu(-self.readout_gain.linear.weight)**2).sqrt()
 
         return {'loss': loss + regpen, 'train_loss': loss, 'reg_loss': regpen}
@@ -248,12 +260,19 @@ def fit_session(fpath, apath, fname, aname):
     NBname = 'latents'
 
 
+    sample = val_ds[:]
+
+    robs = sample['robs'].cpu()
+
+    plt.figure(figsize=(10,5))
+    plt.imshow(robs.T, aspect='auto', interpolation='none')
+
     #% With LBFGS
     mod0 = SharedGain(stim_dims=nstim, NC=NC, num_tents=0, include_gain=False,
-        include_offset=False, output_nonlinearity='Identity',
-        stim_act_func='Identity', act_func='Identity')
+            include_offset=False, output_nonlinearity='Identity',
+            stim_act_func='Identity', act_func='Identity')
 
-    mod0.gamma_stim = .01
+    mod0.gamma_stim = 0.01
 
     optimizer = torch.optim.LBFGS(mod0.parameters(),
                     history_size=10,
@@ -274,33 +293,24 @@ def fit_session(fpath, apath, fname, aname):
     trainer.fit(mod0, train_ds[:], val_ds[:], seed=1234)
     print("Done fitting stim")
 
-    #% plot weights
-    plt.figure()
-    plt.plot(mod0.stim.weight.T.detach().cpu())
-    plt.show()
-        
-    sample = val_ds[:]
-
-    robs = sample['robs'].cpu()
-
     mod0.to(device)
 
     s = mod0.stim(sample['stim'])
     rhat = mod0(sample).detach().cpu().numpy()
-
-    r2 = rsquared(robs, rhat)
     plt.figure()
+    r2 = rsquared(robs, rhat)
     plt.plot(r2)
     plt.axhline(0, color='k')
     plt.xlabel('Neuron ID')
     plt.ylabel("r^2")
     plt.show()
 
-
     #% try with drift
     mod1 = SharedGain(stim_dims=nstim, NC=NC, num_tents=ntents, include_gain=False,
         include_offset=False, output_nonlinearity='Identity',
         stim_act_func='Identity', act_func='Identity')
+
+    mod1.gamma_stim = 0.01
 
     optimizer = torch.optim.LBFGS(mod1.parameters(),
                     history_size=10,
@@ -348,19 +358,20 @@ def fit_session(fpath, apath, fname, aname):
             stim_act_func='Identity',
             output_nonlinearity='Identity')
 
-        mod2.gamma_stim = .1
-        mod2.gamma_latents = 1
+        mod2.gamma_stim = .001
+        mod2.gamma_latents = .01
         mod2.gamma_orth = 0
-        mod2.gamma_readout = 1
+        mod2.gamma_readout = .01
 
         mod2 = mod2.to(device)
         mod2.stim.weight.data = mod1.stim.weight.data.clone() * 2 / 3
         mod2.stim.bias.data = mod1.stim.bias.data.clone()
-        # mod2.drift.weight.data = mod1.drift.weight.data.clone()
-        mod2.drift.weight.data[:] = 0
+        mod2.drift.weight.data = mod1.drift.weight.data.clone()
+        # mod2.drift.weight.data[:] = 0
 
-        mod2.stim.weight.requires_grad = True # freeze stimulus model first
-        mod2.stim.bias.requires_grad = True # freeze stimulus model first
+        mod2.stim.weight.requires_grad = False # freeze stimulus model first
+        mod2.stim.bias.requires_grad = False # freeze stimulus model first
+        mod2.drift.weight.requires_grad = False # freeze stimulus model first
 
         #% Fit gain
         optimizer = torch.optim.LBFGS(mod2.parameters(),
@@ -382,10 +393,11 @@ def fit_session(fpath, apath, fname, aname):
         trainer.fit(mod2, train_ds[:], val_ds[:], seed=1234)
 
         # # unfreeze
-        # mod2.stim.weight.requires_grad = True # freeze stimulus model first
-        # mod2.stim.bias.requires_grad = True # freeze stimulus model first
+        mod2.stim.weight.requires_grad = True # freeze stimulus model first
+        mod2.stim.bias.requires_grad = True # freeze stimulus model first
+        # mod2.drift.weight.requires_grad = True # freeze stimulus model first
 
-        # trainer.fit(mod2, train_ds[:], val_ds[:])
+        trainer.fit(mod2, train_ds[:], val_ds[:])
         mod2.to(device)
         loss = mod2.training_step(train_ds[:])['loss'].item()
         val_loss = mod2.training_step(val_ds[:])['loss'].item()
@@ -407,9 +419,8 @@ def fit_session(fpath, apath, fname, aname):
 
         return mods, losses, val_losses
 
-    def eval_model(mod2, ds, val_ds, use_average=False):
+    def eval_model(mod2, ds, val_ds):
 
-        use_average = False
         sample = ds[:]
         mod2 = mod2.to(device)
         rhat = mod2(sample).detach().cpu().numpy()
@@ -418,28 +429,16 @@ def fit_session(fpath, apath, fname, aname):
             zg = mod2.latent_gain(sample['robs'])
             zg = mod2.gainnl(zg)
             
-            if use_average:
-                zg = mod2.readout_gain(zg).mean(dim=1).detach().cpu()
-                zg = zg[:,None]
-            else:
-                zgav = mod2.readout_gain(zg).mean(dim=1).detach().cpu()
-                zgav = zgav[:,None]
-                # zgav = mod2.readout_gain(zg).mean(dim=1).detach().cpu()
-                # zgav = zgav[:,None]
-                zg = zg.detach().cpu()
+            zgav = mod2.readout_gain(zg).detach().cpu()
+            zg = zg.detach().cpu()
         else:
             zgav = torch.zeros(sample['robs'].shape[0], 1, device='cpu')
             zg = torch.zeros(sample['robs'].shape[0], 1, device='cpu')
 
         if hasattr(mod2, 'latent_offset'):
             zh = mod2.latent_offset(sample['robs'])
-            if use_average:
-                zh = mod2.readout_offset(zh).mean(dim=1).detach().cpu()
-                zh = zh[:,None]
-            else:
-                zhav = mod2.readout_offset(zh).mean(dim=1).detach().cpu()
-                zhav = zhav[:,None]
-                zh = zh.detach().cpu()
+            zhav = mod2.readout_offset(zh).detach().cpu()
+            zh = zh.detach().cpu()
         else:
             zhav = torch.zeros(sample['robs'].shape[0], 1, device='cpu')
             zh = torch.zeros(sample['robs'].shape[0], 1, device='cpu')
@@ -465,12 +464,11 @@ def fit_session(fpath, apath, fname, aname):
         'robs': robs,
         'pupil': pupil, 'running': running}
 
-    use_average = False
-    moddict0 = eval_model(mod0, ds, val_ds, use_average=use_average)
+    moddict0 = eval_model(mod0, ds, val_ds)
     moddict0['model'] = mod0
     das['stim'] = moddict0
 
-    moddict1 = eval_model(mod1, ds, val_ds, use_average=use_average)
+    moddict1 = eval_model(mod1, ds, val_ds)
     moddict1['model'] = mod1
     das['stimdrift'] = moddict1
 
@@ -480,7 +478,7 @@ def fit_session(fpath, apath, fname, aname):
     models, losses, vallosses = train_multistart(nlatent=1, nruns=10, include_offset=True, include_gain=True)
     bestid = np.nanargmin(vallosses)
     mod4 = deepcopy(models[bestid])
-    moddict4 = eval_model(mod4, ds, val_ds, use_average=use_average)
+    moddict4 = eval_model(mod4, ds, val_ds)
     moddict4['model'] = mod4
     moddict4['valloss'] = np.asarray(vallosses)
     das['affine'] = moddict4
@@ -491,7 +489,7 @@ def fit_session(fpath, apath, fname, aname):
     models, losses, vallosses = train_multistart(nlatent=1, nruns=5, include_offset=True, include_gain=False)
     bestid = np.nanargmin(vallosses)
     mod2 = deepcopy(models[bestid])
-    moddict2 = eval_model(mod2, ds, val_ds, use_average=use_average)
+    moddict2 = eval_model(mod2, ds, val_ds)
     moddict2['model'] = mod2
     moddict2['valloss'] = np.asarray(vallosses)
     das['offset'] = moddict2
@@ -502,7 +500,7 @@ def fit_session(fpath, apath, fname, aname):
     models, losses, vallosses = train_multistart(nlatent=1, nruns=5, include_offset=False, include_gain=True)
     bestid = np.nanargmin(vallosses)
     mod3 = deepcopy(models[bestid])
-    moddict3 = eval_model(mod3, ds, val_ds, use_average=use_average)
+    moddict3 = eval_model(mod3, ds, val_ds)
     moddict3['model'] = mod3
     moddict3['valloss'] = np.asarray(vallosses)
     das['gain'] = moddict3

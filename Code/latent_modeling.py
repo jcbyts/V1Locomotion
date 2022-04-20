@@ -9,6 +9,7 @@ import numpy as np
 
 import matplotlib.pyplot as plt
 # %matplotlib ipympl
+plt.rcParams['pdf.fonttype'] = 42
 
 fig_dir = '/mnt/Data/Figures/'
 
@@ -39,79 +40,351 @@ ensure_dir(apath)
 flist = os.listdir(fpath)
 
 #%%
+import pickle
 # flist = [f for f in flist if subject in f]
+nsessions = len(flist)
 
-for isess in range(len(flist)):
+sess_success = np.zeros(nsessions)
+overwrite = False
+for isess in range(nsessions):
     print(isess)
     fname = flist[isess]
     aname = fname.replace('.mat', '.pkl')
 
-    # check if file exists
-    if os.path.isfile(apath + aname):
-        print("Loading analyses")
-        import pickle
-        with open(apath + aname, 'rb') as f:
-            das = pickle.load(f)
-    else:
-        print("No file found, fitting model")
-        fit_session(fpath, apath, fname, aname)
-        with open(apath + aname, 'rb') as f:
-            das = pickle.load(f)
+    try:
+        # check if file exists
+        if overwrite or not os.path.isfile(apath + aname):
+            print("fitting model")
+            fit_session(fpath, apath, fname, aname)
+            with open(apath + aname, 'rb') as f:
+                das = pickle.load(f)
+        else:
+            print("Loading analyses")
+            import pickle
+            with open(apath + aname, 'rb') as f:
+                das = pickle.load(f)
+        sess_success[isess] = 1
+    except:
+        print("Failed to fit model")
+        continue
+        
 
 #%%
-subject = 'mouse'
-flist = os.listdir(apath)
-flist = [f for f in flist if subject in f]
-for isess in range(len(flist)):
-    aname = flist[isess]
-    with open(apath + aname, 'rb') as f:
-        das = pickle.load(f)
+from scipy.stats import spearmanr
+import pickle
+
+def dprime(x, ix):
+
+    mu1 = x[ix.flatten(),:].mean(dim=0)
+    mu2 = x[~ix.flatten(),:].mean(dim=0)
+    sd = x.std(dim=0)
+    dp = (mu1 - mu2) / sd
+    return dp.mode()[0].item()
+
+def sessstats(das, fname=None):
     
-    zg = das['affine']['zgainav']
-    zh = das['affine']['zoffsetav']
-    nlatent = zg.shape[1]
+    import torch.nn.functional as F
+
     running = das['data']['running']
     pupil = das['data']['pupil']
 
-    runinds = np.where((running > 3))[0]
-    statinds = np.where((running < 3))[0]
+    zg = das['affine']['zgainav']
+    zg = (F.relu(zg + 1) + 1e-6).log2()
 
-    plt.figure()
-    plt.subplot(1,2,1)
-    bins = np.linspace(zg.min().item(), zg.max().item(), 50)
-    f = plt.hist(zg[statinds,:].T, bins=bins, alpha=.5) #np.arange(zg.min().item(), zg.max().item(), .1))
-    f = plt.hist(zg[runinds,:].T, bins=bins, alpha=.5) #np.arange(zg.min().item(), zg.max().item(), .1))
-    plt.xlabel('z (gain)')
-    plt.legend(['stationary', 'running'])
+    zh = das['affine']['zoffsetav']
 
-    plt.subplot(1,2,2)
-    bins = np.linspace(zh.min().item(), zh.max().item(), 50)
-    f = plt.hist(zh[statinds,:].T, bins=bins, alpha=.5)
-    f = plt.hist(zh[runinds,:].T, bins=bins, alpha=.5) #np.arange(zg.min().item(), zg.max().item(), .1))
-    plt.xlabel('z (offset)')
-    plt.legend(['stationary', 'running'])
-    plt.show()
+    # get gain dprime running
+    dprun = dprime(zg, running>3)
+    dppup = dprime(zg, pupil > np.nanmedian(pupil))
 
-    r2test = []
-    r2test.append(das['stim']['r2test'].numpy())
-    r2test.append(das['stimdrift']['r2test'].numpy())
-    r2test.append(das['offset']['r2test'].numpy())
-    r2test.append(das['gain']['r2test'].numpy())
-    r2test.append(das['affine']['r2test'].numpy())
-    plt.violinplot(r2test, showmeans=True)
-    plt.title(subject + ' {}'.format(isess))
-    plt.show()
+    res = spearmanr(running, pupil, nan_policy='omit')
+
+    dstat = {}
+    dstat['sess'] = '%s %i' %(subject, isess)
+    dstat['fname'] = fname
+    dstat['gainrange'] = zg.std(dim=0).numpy() #(zg.max(dim=0)[0] - zg.min(dim=0)[0]).numpy()
+    dstat['dprungain'] = dprun
+    dstat['dppupgain'] = dppup
+    dstat['runningpupilcorr'] = res
+    maxid = zg.max(dim=0)[0].argmax().item()
+    dstat['gainruncorr'] = spearmanr(zg[:,maxid], running, nan_policy='omit')
+    dstat['gainpupilcorr'] = spearmanr(zg[:,maxid], pupil, nan_policy='omit')
+    modellist = ['stim', 'stimdrift', 'offset', 'gain', 'affine']
+    dstat['r2models'] = {}
+    for f in modellist:
+        dstat['r2models'][f] = das[f]['r2test'].numpy()
+
+    return dstat
+
+dstats = []
+subjid = []
+
+thelist = [fname.replace('.mat', '.pkl') for fname in flist[0:6]]
+
+for subject in ['mouse', 'marmoset']:
+
+    
+    filelist = os.listdir(apath)
+    # filelist = thelist
+    filelist = [f for f in filelist if subject in f]
+
+    for isess in range(len(filelist)):
+        subjid.append(subject)
+        aname = filelist[isess]
+
+        with open(apath + aname, 'rb') as f:
+            das = pickle.load(f)
+        
+        dstats.append(sessstats(das, aname))
+
+
+gainrange = np.concatenate([d['gainrange'] for d in dstats])
+subjid = np.concatenate([ np.ones(len(d['gainrange']))*('mouse' in d['sess']) for d in dstats])
+#% Model performance
+
+def set_axis_style(ax, labels):
+    ax.get_xaxis().set_tick_params(direction='out')
+    ax.xaxis.set_ticks_position('bottom')
+    ax.set_xticks(np.arange(1, len(labels) + 1))
+    ax.set_xticklabels(labels)
+    ax.set_xlim(0.25, len(labels) + 0.75)
+    ax.set_xlabel('Model')
+
+r2 = []
+modellist = ['stim', 'stimdrift', 'offset', 'gain', 'affine']
+for f in modellist:
+    r2.append(np.concatenate([d['r2models'][f] for d in dstats]))
+
+goodix = np.logical_and(r2[1] > 0 , r2[-1] > 0)
+# for i in range(len(modellist)):
+#     r2[i] = r2[i][goodix]
+
+plt.figure(figsize=(10,5))
+ax = plt.subplot(1,2,1)
+ix = np.logical_and(goodix, subjid==0)
+r2plot = [r[ix] for r in r2]
+plt.violinplot(r2plot, showmedians=True)
+plt.axhline(0, color='k')
+plt.ylim([-0.1,1])
+plt.ylabel('cv $r^2$')
+plt.title('Marmoset')
+
+ax1 = plt.subplot(1,2,2)
+ix = np.logical_and(goodix, subjid==1)
+r2plot = [r[ix] for r in r2]
+plt.violinplot(r2plot, showmedians=True)
+plt.axhline(0, color='k')
+plt.ylim([-0.1,1])
+set_axis_style(ax, modellist)
+set_axis_style(ax1, modellist)
+plt.ylabel('cv $r^2$')
+plt.title('Mouse')
+
+from scipy.stats import wilcoxon
+
+
+plt.figure(figsize=(10,5))
+plt.subplot(1,2,1)
+i = 1
+j = -1
+ix = np.logical_and(goodix, subjid==1)
+plt.plot(r2[i][ix], r2[j][ix], '.', alpha=0.5, label='Mouse')
+res = wilcoxon(r2[i][ix], r2[j][ix])
+ix = np.logical_and(goodix, subjid==0)
+plt.plot(r2[i][ix], r2[j][ix], '.', alpha=0.5, label='Marmoset')
+plt.plot([0,1], [0,1], 'k--')
+plt.legend()
+plt.xlabel(modellist[i])
+plt.ylabel(modellist[j])
+plt.subplot(1,2,2)
+i = 2
+j = -1
+ix = np.logical_and(goodix, subjid==1)
+plt.plot(r2[i][ix], r2[j][ix], '.', alpha=0.5, label='Mouse')
+ix = np.logical_and(goodix, subjid==0)
+plt.plot(r2[i][ix], r2[j][ix], '.', alpha=0.5, label='Marmoset')
+plt.plot([0,1], [0,1], 'k--')
+plt.xlabel(modellist[i])
+plt.ylabel(modellist[j])
+plt.axhline(1, color='k')
+
+#%% measure of Total gain fluctuations
+
+clr_mouse = np.asarray([206, 110, 41])/255
+clr_marmoset = np.asarray([51, 121, 169])/255
+
+bins = np.linspace(np.min(gainrange), np.max(gainrange), 200)
+# bins = np.linspace(np.min(gainrange), 10, 100)
+plt.figure()
+ax = plt.subplot()
+cmap = plt.cm.get_cmap('tab10')
+f1 = plt.hist(gainrange[subjid==1], bins=bins, alpha=0.5, label='mouse', color=clr_mouse)
+f2 = plt.hist(gainrange[subjid==0], bins=bins, alpha=0.5, label='marmoset', color=clr_marmoset)
+plt.legend()
+
+m1 = np.median(gainrange[subjid==1])
+m2 = np.median(gainrange[subjid==0])
+# m1 = np.mean(gainrange[subjid==1])
+# m2 = np.mean(gainrange[subjid==0])
+my = np.max(f2[0])
+
+plt.xlabel('stdev of gain modulation')
+plt.ylabel('Number of units')
+plt.plot(m1, my, 'v', color=clr_mouse)
+plt.plot(m2, my, 'v', color=clr_marmoset)
+plt.xlim(0, 2)
+
+print('mouse modulates by {}. marmoset by {}'.format(2**m1, 2**m2))
+
+xax = np.log2(np.arange(1, 4, .5))
+# xax = np.linspace(0, 2, 5)
+ax.set_xticks(xax)
+ax.set_xticklabels(['%.1fx' %s for s in 2**xax])
+
+
+#%% Correlation with different variables
+gainrunrho = np.asarray([d['gainruncorr'][0] for d in dstats])
+gainrunpval = np.asarray([d['gainruncorr'][1] for d in dstats])
+subix = np.asarray(['mouse' in d['sess'] for d in dstats])
+
+sessid = np.arange(len(gainrunrho))
+sig = gainrunpval < 0.05
+
+plt.plot(sessid[subix], gainrunrho[subix], 'o', alpha=0.5, color=clr_mouse)
+plt.plot(sessid[~subix], gainrunrho[~subix], 'o', alpha=0.5, color=clr_marmoset)
+ix = np.logical_and(sig, subix)
+plt.plot(sessid[ix], gainrunrho[ix], 'o', alpha=1.0, color=clr_mouse, label='Mouse')
+ix = np.logical_and(sig, ~subix)
+plt.plot(sessid[ix], gainrunrho[ix], 'o', alpha=1.0, color=clr_marmoset, label='Marmoset')
+
+plt.ylabel('Correlation with Running')
+plt.axhline(0, color='k')
+plt.xlabel('Session ID')
+plt.legend()
+
+#%% Correlation with pupil
+gainrunrho = np.asarray([d['gainpupilcorr'][0] for d in dstats])
+gainrunpval = np.asarray([d['gainpupilcorr'][1] for d in dstats])
+subix = np.asarray(['mouse' in d['sess'] for d in dstats])
+
+sessid = np.arange(len(gainrunrho))
+sig = gainrunpval < 0.05
+
+plt.plot(sessid[subix], gainrunrho[subix], 'o', alpha=0.5, color=cmap(0))
+plt.plot(sessid[~subix], gainrunrho[~subix], 'o', alpha=0.5, color=cmap(2))
+ix = np.logical_and(sig, subix)
+plt.plot(sessid[ix], gainrunrho[ix], 'o', alpha=1.0, color=cmap(0), label='Mouse')
+ix = np.logical_and(sig, ~subix)
+plt.plot(sessid[ix], gainrunrho[ix], 'o', alpha=1.0, color=cmap(2), label='Marmoset')
+
+plt.ylabel('Correlation with Pupil')
+plt.axhline(0, color='k')
+plt.xlabel('Session ID')
+plt.legend()
+
+#%% Correlation between pupil and running
+gainrunrho = np.asarray([d['runningpupilcorr'][0] for d in dstats])
+gainrunpval = np.asarray([d['runningpupilcorr'][1] for d in dstats])
+subix = np.asarray(['mouse' in d['sess'] for d in dstats])
+
+sessid = np.arange(len(gainrunrho))
+sig = gainrunpval < 0.05
+
+plt.plot(sessid[subix], gainrunrho[subix], 'o', alpha=0.5, color=cmap(0))
+plt.plot(sessid[~subix], gainrunrho[~subix], 'o', alpha=0.5, color=cmap(2))
+ix = np.logical_and(sig, subix)
+plt.plot(sessid[ix], gainrunrho[ix], 'o', alpha=1.0, color=cmap(0), label='Mouse')
+ix = np.logical_and(sig, ~subix)
+plt.plot(sessid[ix], gainrunrho[ix], 'o', alpha=1.0, color=cmap(2), label='Marmoset')
+
+plt.ylabel('Correlation btw. Running and Pupil')
+plt.axhline(0, color='k')
+plt.xlabel('Session ID')
+plt.legend()
+
+#%% plot single session
+# flist = os.listdir(apath)
+# subject = 'marmoset'
+# flist = [f for f in flist if subject in f]
+
+# isess = 55
+# aname = dstats[isess]['fname']
+aname = 'marmoset_23.pkl'
+fname = aname.replace('.pkl', '.mat')
+
+print(aname)
+
+refit = True
+
+if refit:
+    fit_session(fpath, apath, fname, aname)
 
 
 
+with open(apath + aname, 'rb') as f:
+    das = pickle.load(f)
 
+import torch.nn.functional as F
 
-
-#%%
+id = np.argmax(das['affine']['zgainav'].std(dim=0).numpy())
+zg = F.relu(1 + das['affine']['zgainav'][:,id].unsqueeze(1))
+zh = das['affine']['zoffsetav'].mean(dim=1).unsqueeze(1)
+nlatent = zg.shape[1]
 running = das['data']['running']
 pupil = das['data']['pupil']
 
-plt.plot(running)
+plt.figure(figsize=(10,5))
+ax = plt.subplot()
+plt.plot(running, 'k')
+ax2 = ax.twinx() 
+plt.plot(pupil, 'r')
+
+ax.set_ylabel("Running")
+ax2.set_ylabel("Pupil")
+plt.xlabel("Trial #")
+plt.title(aname)
+
+plt.figure()
+plt.plot(running, pupil, '.')
+plt.xlabel('Running')
+plt.ylabel('Pupil')
+
+
+runinds = np.where((running > 3))[0]
+statinds = np.where((running < 3))[0]
+
+plt.figure()
+plt.subplot(1,2,1)
+bins = np.linspace(zg.min().item(), zg.max().item(), 50)
+f = plt.hist(zg[statinds,:].T, bins=bins, alpha=.5) #np.arange(zg.min().item(), zg.max().item(), .1))
+f = plt.hist(zg[runinds,:].T, bins=bins, alpha=.5) #np.arange(zg.min().item(), zg.max().item(), .1))
+plt.xlabel('z (gain)')
+plt.legend(['stationary', 'running'])
+
+plt.subplot(1,2,2)
+bins = np.linspace(zh.min().item(), zh.max().item(), 50)
+f = plt.hist(zh[statinds,:].T, bins=bins, alpha=.5)
+f = plt.hist(zh[runinds,:].T, bins=bins, alpha=.5) #np.arange(zg.min().item(), zg.max().item(), .1))
+plt.xlabel('z (offset)')
+plt.legend(['stationary', 'running'])
+plt.show()
+
+r2test = []
+r2test.append(das['stim']['r2test'].numpy())
+r2test.append(das['stimdrift']['r2test'].numpy())
+r2test.append(das['offset']['r2test'].numpy())
+r2test.append(das['gain']['r2test'].numpy())
+r2test.append(das['affine']['r2test'].numpy())
+plt.violinplot(r2test, showmeans=True)
+plt.title(subject + ' {}'.format(isess))
+plt.ylim(-.1, 1)
+plt.show()
+
+
+running = das['data']['running']
+pupil = das['data']['pupil']
+
+# plt.plot(running)
 
 mod2 = das['affine']['model']
 
@@ -119,11 +392,22 @@ plt.figure()
 plt.plot(mod2.stim.weight.T.detach().cpu())
 plt.show()
 
-zg = das['affine']['zgainav']
+#%%
+
+import torch.nn.functional as F
+id = np.argmax(das['affine']['zgainav'].std(dim=0).numpy())
+zg = F.relu(1 + das['affine']['zgainav'][:,id].unsqueeze(1))
+
+# zg = das['affine']['zgainav']
 zh = das['affine']['zoffsetav']
+
+# zg = F.relu(1 + zg[:,0].unsqueeze(1))
+zh = zh[:,id].unsqueeze(1)
+
 nlatent = zg.shape[1]
 
-plt.figure(figsize=(10,5))
+
+plt.figure(figsize=(10,5+nlatent))
 for i in range(nlatent):
     ax = plt.subplot(nlatent,1,i+1)
     plt.plot(running, 'k')
@@ -132,7 +416,7 @@ for i in range(nlatent):
     plt.title("add latent %d" % i)
 
 
-plt.figure(figsize=(10,5))
+plt.figure(figsize=(10,5+nlatent))
 for i in range(nlatent):
     ax = plt.subplot(nlatent,1,i+1)
     plt.plot(running, 'k')
@@ -209,6 +493,7 @@ f = plt.plot(mod2.latent_offset.weight.T.detach().cpu())
 plt.axhline(0, color='k')
 plt.show()
 
+
 # %%
 plt.figure()
 plt.subplot(2,1,1)
@@ -220,8 +505,107 @@ plt.axhline(0, color='k')
 plt.show()
 
 
+
 #%%
+robs = das['data']['robs']
+n = robs.std(axis=0)
+robs = robs / n
+
+zg = F.relu(1 + das['affine']['zgainav']).numpy()
+
+s = np.std(zg, axis=0)
+inds = np.argsort(s)
+sortmode = 'none'
+if sortmode == 'none':
+    inds = np.arange(len(inds))
+
+plt.figure(figsize=(10,5))
+plt.subplot(2,1,1)
+plt.imshow(np.sqrt(robs[:,inds].T), aspect='auto', cmap='Blues')
+plt.axis("off")
+plt.plot([0, 100], [robs.shape[1], robs.shape[1]], 'k', linewidth=5)
+plt.plot([robs.shape[0],robs.shape[0]], [robs.shape[1]-100, robs.shape[1]], 'k', linewidth=5)
+
+# add scale bar with annotation
+# plt.plot([0, 100], [robs.shape[1], robs.shape[1]], 'k', linewidth=5)
+plt.annotate('100 Trials', xy=(105, robs.shape[1] - 0), xytext=(105, robs.shape[1] + 35),
+                arrowprops=dict(facecolor='none', arrowstyle='-'),   
+                horizontalalignment='center', verticalalignment='center')
+plt.title("Spike Count (normalized and sorted by %s)" % sortmode)
+
+# sns.despine(trim=True, offset=0)
+
+plt.subplot(2,1,2)
+plt.imshow(zg[:,inds].T, aspect='auto', cmap='Blues')
+plt.axis("off")
+plt.title("Gain Modulation")
+plt.plot([0, 100], [robs.shape[1], robs.shape[1]], 'k', linewidth=5)
+plt.plot([robs.shape[0],robs.shape[0]], [robs.shape[1]-100, robs.shape[1]], 'k', linewidth=5)
+plt.annotate('100 Trials', xy=(105, robs.shape[1] - 0), xytext=(105, robs.shape[1] + 35),
+                arrowprops=dict(facecolor='none', arrowstyle='-'),   
+                horizontalalignment='center', verticalalignment='center')
+plt.plot(np.maximum(running, 0).flatten()*5, 'r')
+plt.savefig("../Figures/npx_spikes_sorted_%s.pdf" % sortmode)
+
+plt.figure(figsize=(10,5))
+plt.subplot(2,1,1)
+# plt.fill_between(running, 'k')
+plt.plot(np.maximum(running, 0).flatten(), 'k')
+# plt.plot(running, 'k')
+plt.plot([0, 100], [0,0], 'k', linewidth=5)
+
+plt.annotate('100 Trials', xy=(105, -10), xytext=(105, -10),
+                arrowprops=dict(facecolor='none', arrowstyle='-'),   
+                horizontalalignment='center', verticalalignment='center')
+plt.axis("off")
+plt.plot([robs.shape[0],robs.shape[0]], [0, 10], 'k', linewidth=5)
+
+plt.subplot(2,1,2)
+plt.plot()
+plt.savefig("../Figures/npx_running.pdf")
+
+res = spearmanr(zg[:,id], running)
+
+plt.figure(figsize=(10,5))
+plt.subplot(2,1,1)
+plt.plot(das['affine']['zgain'], 'k')
+plt.axis("off")
+plt.subplot(2,1,2)
+plt.plot(das['affine']['zoffset'], 'k')
+plt.axis("off")
+plt.plot([0, 100], [0,0], 'k', linewidth=5)
+
+plt.annotate('100 Trials', xy=(105, -10), xytext=(105, -10),
+                arrowprops=dict(facecolor='none', arrowstyle='-'),   
+                horizontalalignment='center', verticalalignment='center')
+
+plt.savefig("../Figures/npx_shared_gain_offset.pdf")
+
+
+NC = robs.shape[1]
+
+#%%
+plt.figure(figsize=(10,5))
+plt.subplot(2,1,1)
+for i in range(20):
+    f = plt.plot(zg[:,i] + 5*i, 'k')
+plt.axis("off")
+plt.subplot(2,1,2)
+for i in range(20):
+    f = plt.plot(das['affine']['zoffsetav'][:,i] + 2*i, 'k')
+
+plt.plot([0, 100], [0,0], 'k', linewidth=5)
+plt.axis("off")
+plt.savefig("../Figures/npx_shared_gain_loaded.pdf")
+#%%
+fname = 'marmoset_23.mat'
 dat = loadmat(os.path.join(fpath, fname))
+
+ecc = np.hypot(dat['rfcenter_x'].flatten(), dat['rfcenter_y'].flatten())
+plt.figure()
+plt.plot(ecc, s, '.')
+
+#%%
 
 trial_ix = np.where(~np.isnan(dat['gdirection']))[0]
 
@@ -485,13 +869,13 @@ val_ds = Subset(ds, val_inds.tolist())
 dirname = os.path.join('.', 'checkpoints')
 NBname = 'latents'
 
-
+#%%
 #% With LBFGS
 mod0 = SharedGain(stim_dims=nstim, NC=NC, num_tents=0, include_gain=False,
     include_offset=False, output_nonlinearity='Identity',
     stim_act_func='Identity', act_func='Identity')
 
-mod0.gamma_stim = .01
+mod0.gamma_stim = 0.0001
 
 optimizer = torch.optim.LBFGS(mod0.parameters(),
                 history_size=10,
@@ -507,7 +891,7 @@ trainer = LBFGSTrainer(
     optimize_graph=True,
     log_activations=False,
     set_grad_to_none=False,
-    verbose=2)
+    verbose=0)
 
 trainer.fit(mod0, train_ds[:], val_ds[:], seed=1234)
 
@@ -535,7 +919,7 @@ plt.ylabel("r^2")
 plt.show()
 
 
-#% try with drift
+#%% try with drift
 mod1 = SharedGain(stim_dims=nstim, NC=NC, num_tents=ntents, include_gain=False,
     include_offset=False, output_nonlinearity='Identity',
     stim_act_func='Identity', act_func='Identity')

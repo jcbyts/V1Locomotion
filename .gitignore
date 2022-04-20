@@ -3,3 +3,5 @@
 *.txt
 *.mat
 Code/bkp/*
+Code/checkpoints/*
+Code/__pycache__/*
