@@ -317,9 +317,10 @@ print(aname)
 refit = True
 
 if refit:
-    fit_session(fpath, apath, fname, aname)
+    a = fit_session(fpath, apath, fname, aname, stim_reg_vals={'l2':0.1}, reg_vals={'l2':0.01})
 
 
+#%%
 
 with open(apath + aname, 'rb') as f:
     das = pickle.load(f)
@@ -374,8 +375,10 @@ r2test.append(das['stim']['r2test'].numpy())
 r2test.append(das['stimdrift']['r2test'].numpy())
 r2test.append(das['offset']['r2test'].numpy())
 r2test.append(das['gain']['r2test'].numpy())
+r2test.append(das['affine']['r2test'].numpy())
 r2test.append(das['affineadjust']['r2test'].numpy())
 plt.violinplot(r2test, showmeans=True)
+plt.axhline(0, color='k')
 plt.title(subject + ' {}'.format(isess))
 plt.ylim(-1, 1)
 plt.show()
@@ -474,13 +477,14 @@ f = plt.hist(zh[runinds,:].T, bins=bins, alpha=.5) #np.arange(zg.min().item(), z
 plt.xlabel('z (offset)')
 plt.legend(['stationary', 'running'])
 
-
+#%%
 r2_1 = das['stimdrift']['r2test']
 r2_2 = das['affine']['r2test']
-
+r2_3 = das['affineadjust']['r2test']
 
 plt.figure()
 plt.plot(r2_1, r2_2, '.')
+plt.plot(r2_1, r2_3, '.')
 plt.plot(plt.xlim(), plt.xlim(), 'k')
 plt.xlabel('r^2 (Stimulus Only + Neuron Drift)')
 plt.ylabel('r^2 (Stimulus + Latents)')
@@ -488,10 +492,10 @@ plt.ylabel('r^2 (Stimulus + Latents)')
 #%% Plot loadings for latents
 plt.figure()
 plt.subplot(2,1,1)
-f = plt.plot(mod2.latent_gain.weight.T.detach().cpu())
+f = plt.plot(mod2.latent_gain.weight.detach().cpu())
 plt.axhline(0, color='k')
 plt.subplot(2,1,2)
-f = plt.plot(mod2.latent_offset.weight.T.detach().cpu())
+f = plt.plot(mod2.latent_offset.weight.detach().cpu())
 plt.axhline(0, color='k')
 plt.show()
 
@@ -499,17 +503,17 @@ plt.show()
 # %%
 plt.figure()
 plt.subplot(2,1,1)
-f = plt.plot(mod2.readout_gain.linear.weight.detach().cpu())
+f = plt.plot(mod2.readout_gain.weight.T.detach().cpu())
 plt.axhline(0, color='k')
 plt.subplot(2,1,2)
-f = plt.plot(mod2.readout_offset.linear.weight.detach().cpu())
+f = plt.plot(mod2.readout_offset.weight.T.detach().cpu())
 plt.axhline(0, color='k')
 plt.show()
 
 
 
 #%%
-robs = das['data']['robs']
+robs = das['data']['robs'][:, mod2.cids]
 n = robs.std(axis=0)
 robs = robs / n
 
