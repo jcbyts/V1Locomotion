@@ -421,7 +421,7 @@ def fit_session(fpath, apath, fname, aname, stim_reg_vals={'l2':0.0}, reg_vals={
         ntents=0,
         include_offset=True,
         include_gain=True,
-        use_adam=False,
+        use_adam=True,
         cids=None):
 
         mod2 = SharedGain(stim_dims=nstim, NC=NC,
@@ -449,7 +449,7 @@ def fit_session(fpath, apath, fname, aname, stim_reg_vals={'l2':0.0}, reg_vals={
 
         #% Fit gain
         if use_adam:
-            optimizer = torch.optim.AdamW(mod2.parameters(), lr=1e-4, weight_decay=1e-5)
+            optimizer = torch.optim.AdamW(mod2.parameters(), lr=1e-3, weight_decay=1e-5)
 
             trainer = Trainer(
                 optimizer=optimizer,

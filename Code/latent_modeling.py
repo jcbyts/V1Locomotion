@@ -389,7 +389,7 @@ pupil = das['data']['pupil']
 
 # plt.plot(running)
 
-mod2 = das['affineadjust']['model']
+mod2 = das['affine']['model']
 
 plt.figure()
 plt.plot(mod2.stim.weight.T.detach().cpu())
@@ -398,10 +398,10 @@ plt.show()
 #%%
 
 import torch.nn.functional as F
-sdg = das['affineadjust']['zgainav'].std(dim=0).numpy()
+sdg = das['affine']['zgainav'].std(dim=0).numpy()
 
 id = np.argmin((sdg - np.mean(sdg))**2)
-zg = F.relu(1 + das['affineadjust']['zgainav'][:,id].unsqueeze(1))
+zg = F.relu(1 + das['affine']['zgainav'][:,id].unsqueeze(1))
 
 # zg = das['affine']['zgainav']
 zh = das['affine']['zoffsetav']
