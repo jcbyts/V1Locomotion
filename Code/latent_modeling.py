@@ -43,7 +43,7 @@ flist = os.listdir(fpath)
 import pickle
 # flist = [f for f in flist if subject in f]
 nsessions = len(flist)
-
+# nsessions = 10
 sess_success = np.zeros(nsessions)
 overwrite = False
 for isess in range(nsessions):
@@ -85,13 +85,48 @@ def sessstats(das, fname=None):
     
     import torch.nn.functional as F
 
+    r2affine = das['affine']['r2test']
+    r2stim = das['stimdrift']['r2test']
+    r2offset = das['offset']['r2test']
+
+    # check which units were improved by the shared gain / offset terms
+    no_gain = np.where(r2affine < r2stim)[0]
+    no_offset = np.setdiff1d(no_gain, no_gain[np.where(r2offset[no_gain] > r2stim[no_gain])[0]])
+
     running = das['data']['running']
     pupil = das['data']['pupil']
+    mod = das['affine']['model']
+    mod.to('cpu')
 
-    zg = das['affine']['zgainav']
-    zg = (F.relu(zg + 1) + 1e-6).log2()
+    robs = torch.tensor(das['data']['robs'])
 
-    zh = das['affine']['zoffsetav']
+    # latent gain gets datafiltered input
+    s = robs.std(dim=0)
+    mu = robs.mean(dim=0)
+    dfs = torch.abs( (robs - mu) / s) < 10
+
+    robs = robs * dfs
+
+    zg = mod.latent_gain(robs)
+    zh = mod.latent_offset(robs)
+
+    # get the average sign of the gain to find positive
+    sflipg = np.sign(np.mean(np.sign(mod.readout_gain.get_weights())))
+    sfliph = np.sign(np.mean(np.sign(mod.readout_offset.get_weights())))
+
+    zglatent = F.relu(1 + zg*sflipg).detach().cpu() # convert latent to a single gain
+    zhlatent = zh.detach().cpu() * sfliph # flip sign if most of the population has a negative weight
+
+    # get population level gains
+    zgpop = F.relu(1 + mod.readout_gain(zg).detach().cpu())
+    # get population level offsets
+    zhpop = mod.readout_offset(zh).detach().cpu()
+
+    zgpop[:,no_gain] = 1.0
+    zhpop[:,no_offset] = 0.0
+
+    zglatent[zglatent < 1e-6] = 1e-6
+    zg = (zglatent).log2()
 
     # get gain dprime running
     dprun = dprime(zg, running>3)
@@ -102,14 +137,20 @@ def sessstats(das, fname=None):
     dstat = {}
     dstat['sess'] = '%s %i' %(subject, isess)
     dstat['fname'] = fname
-    dstat['gainrange'] = zg.std(dim=0).numpy() #(zg.max(dim=0)[0] - zg.min(dim=0)[0]).numpy()
+    dstat['gainrange'] = zgpop.std(dim=0).numpy()
     dstat['dprungain'] = dprun
     dstat['dppupgain'] = dppup
     dstat['runningpupilcorr'] = res
-    maxid = zg.max(dim=0)[0].argmax().item()
-    dstat['gainruncorr'] = spearmanr(zg[:,maxid], running, nan_policy='omit')
-    dstat['gainpupilcorr'] = spearmanr(zg[:,maxid], pupil, nan_policy='omit')
-    modellist = ['stim', 'stimdrift', 'offset', 'gain', 'affine']
+    dstat['gainruncorr'] = spearmanr(zglatent, running, nan_policy='omit')
+    dstat['gainpupilcorr'] = spearmanr(zglatent, pupil, nan_policy='omit')
+    dstat['offsetruncorr'] = spearmanr(zhlatent, running, nan_policy='omit')
+    dstat['offsetpupilcorr'] = spearmanr(zhlatent, pupil, nan_policy='omit')
+    dstat['running'] = running
+    dstat['pupil'] = pupil
+    dstat['zglatent'] = zglatent.numpy()
+    dstat['zhlatent'] = zhlatent.numpy()
+
+    modellist = ['drift', 'stimdrift', 'offset', 'gain', 'affine']
     dstat['r2models'] = {}
     for f in modellist:
         dstat['r2models'][f] = das[f]['r2test'].numpy()
@@ -151,13 +192,16 @@ def set_axis_style(ax, labels):
     ax.set_xlabel('Model')
 
 r2 = []
-modellist = ['stim', 'stimdrift', 'offset', 'gain', 'affine']
+modellist = ['drift', 'stimdrift', 'offset', 'gain', 'affine']
 for f in modellist:
     r2.append(np.concatenate([d['r2models'][f] for d in dstats]))
 
 goodix = np.logical_and(r2[1] > 0 , r2[-1] > 0)
 # for i in range(len(modellist)):
 #     r2[i] = r2[i][goodix]
+
+clr_mouse = np.asarray([206, 110, 41])/255
+clr_marmoset = np.asarray([51, 121, 169])/255
 
 plt.figure(figsize=(10,5))
 ax = plt.subplot(1,2,1)
@@ -208,31 +252,133 @@ plt.xlabel(modellist[i])
 plt.ylabel(modellist[j])
 plt.axhline(1, color='k')
 
+
+#%% get null distributions
+mouse_sessions = np.where(['mouse' in d['sess'] for d in dstats])[0]
+marm_sessions = np.where(['marmoset' in d['sess'] for d in dstats])[0]
+
+def get_pseudosession_null(dstats, field1, sesslist, field2='running'):
+    """
+    Get null distribution for a field using pseudo-session method
+    """
+    null = []
+    for i in sesslist:
+        for j in np.setdiff1d(sesslist, i):
+            x = dstats[i][field1]
+            y = dstats[j][field2]
+            NT = np.minimum(len(x), len(y))
+            res = spearmanr(x[:NT], y[:NT], nan_policy='omit')
+            null.append(res[0])
+
+    return np.asarray(null)
+
+def run_stats_check(dstats, field1='gain', field2='running', plot_individual=True):
+    import warnings
+    warnings.filterwarnings('ignore')
+    import seaborn as sns    
+    from scipy.stats import wilcoxon, mannwhitneyu
+    print("RUNNING COMPARISON")
+    print("Comparing %s to %s" % (field1, field2))
+
+    mouse_sessions = np.where(['mouse' in d['sess'] for d in dstats])[0]
+    marm_sessions = np.where(['marmoset' in d['sess'] for d in dstats])[0]
+
+    mouse_null_z = get_pseudosession_null(dstats, field1, mouse_sessions, field2=field2)
+    marm_null_z = get_pseudosession_null(dstats, field1, marm_sessions, field2=field2)
+
+    mouse_r = np.asarray([spearmanr(dstats[i][field1], dstats[i][field2], nan_policy='omit')[0] for i in mouse_sessions])
+    marm_r = np.asarray([spearmanr(dstats[i][field1], dstats[i][field2], nan_policy='omit')[0] for i in marm_sessions])
+
+    # plot gain correlation with running
+    pvalmouse = np.mean(mouse_r[:,None] > mouse_null_z, axis=1)
+    pvalmouse[pvalmouse>.5] = 1 - pvalmouse[pvalmouse>.50]
+
+    pvalmarm = np.mean(marm_r[:,None] > marm_null_z, axis=1)
+    pvalmarm[pvalmarm>.5] = 1 - pvalmarm[pvalmarm>.50]
+
+    pvalmouse *= 2
+    pvalmarm *= 2
+
+    if plot_individual:
+        plt.figure()
+        plt.plot(marm_sessions, pvalmarm, 'o', label='marmoset')
+        plt.plot(mouse_sessions, pvalmouse, 'o', label='mouse')
+        plt.axhline(0.05, color='k')
+        plt.ylabel('p-value')
+        plt.xlabel('Session')
+        plt.legend()
+
+    plt.figure(figsize=(2.5,5))
+    plt.subplot(2,1,1)
+    bins = np.linspace(-1,1,30)
+    f = plt.hist(marm_r, bins=bins, color=clr_marmoset, alpha=0.5, label='marmoset')
+    plt.hist(marm_r[pvalmarm<0.05], bins=bins, color=clr_marmoset, alpha=1, label='significant')
+    m_marm = np.nanmedian(marm_r)
+    res = wilcoxon(marm_r)
+    plt.plot(m_marm, f[0].max()+1, 'v', color=clr_marmoset)
+    if res[1] < 0.05:
+        plt.plot(m_marm, f[0].max()+2, '*k')
+        print('Marmoset: %.3f significantly different than 0. Wilcoxon stat (%d), p=%.3f' %(m_marm, res[0], res[1]))
+    else:
+        print('Marmoset: %.3f not significantly different 0. Wilcoxon stat (%d), p=%.3f' %(m_marm, res[0], res[1]))
+        
+    plt.ylabel('Num. sessions')
+    plt.title("%s vs. %s" % (field1, field2))
+
+    # plt.title('Marmoset')
+    plt.subplot(2,1,2)
+    bins = np.linspace(-1,1,30)
+    f = plt.hist(mouse_r, bins=bins, color=clr_mouse, alpha=0.5, label='marmoset')
+    plt.hist(mouse_r[pvalmouse<0.05], bins=bins, color=clr_mouse, alpha=1, label='significant')
+    m_mouse = np.nanmedian(mouse_r)
+    res = wilcoxon(mouse_r)
+    plt.plot(m_mouse, f[0].max()+1, 'v', color=clr_mouse)
+    if res[1] < 0.05:
+        plt.plot(m_mouse, f[0].max()+2, '*k')
+        print('Mouse: %.3f significantly different than 0. Wilcoxon stat (%d), p=%.3f' %(m_mouse, res[0], res[1]))
+    else:
+        print('Mouse: %.3f not significantly different 0. Wilcoxon stat (%d), p=%.3f' %(m_mouse, res[0], res[1]))
+
+    plt.xlabel('Spearman r')
+    sns.despine(trim=True)
+    plt.ylabel('Num. sessions')
+
+
+    res = mannwhitneyu(marm_r[~np.isnan(marm_r)], mouse_r[~np.isnan(mouse_r)])
+    if res[1] < 0.05:
+        print('Marmoset vs. Mouse significantly different than eachother. Mann-Whitney stat (%d), p=%.7f' %(res[0], res[1]))
+
+#%% plot stats check
+run_stats_check(dstats, field1='zglatent', field2='running', plot_individual=False)
+run_stats_check(dstats, field1='zglatent', field2='pupil', plot_individual=False)
+
+run_stats_check(dstats, field1='zhlatent', field2='running', plot_individual=False)
+run_stats_check(dstats, field1='zhlatent', field2='pupil', plot_individual=False)
+
 #%% measure of Total gain fluctuations
 
-clr_mouse = np.asarray([206, 110, 41])/255
-clr_marmoset = np.asarray([51, 121, 169])/255
+
 
 bins = np.linspace(np.min(gainrange), np.max(gainrange), 200)
 # bins = np.linspace(np.min(gainrange), 10, 100)
 plt.figure()
 ax = plt.subplot()
 cmap = plt.cm.get_cmap('tab10')
-f1 = plt.hist(gainrange[subjid==1], bins=bins, alpha=0.5, label='mouse', color=clr_mouse)
-f2 = plt.hist(gainrange[subjid==0], bins=bins, alpha=0.5, label='marmoset', color=clr_marmoset)
+f1 = plt.hist(gainrange[subjid==1], bins=bins, alpha=0.5, label='mouse', color=clr_mouse, density=True)
+f2 = plt.hist(gainrange[subjid==0], bins=bins, alpha=0.5, label='marmoset', color=clr_marmoset, density=True)
 plt.legend()
 
-m1 = np.median(gainrange[subjid==1])
-m2 = np.median(gainrange[subjid==0])
+m1 = np.nanmedian(gainrange[subjid==1])
+m2 = np.nanmedian(gainrange[subjid==0])
 # m1 = np.mean(gainrange[subjid==1])
 # m2 = np.mean(gainrange[subjid==0])
-my = np.max(f2[0])
+my = np.max(plt.ylim())
 
 plt.xlabel('stdev of gain modulation')
 plt.ylabel('Number of units')
 plt.plot(m1, my, 'v', color=clr_mouse)
 plt.plot(m2, my, 'v', color=clr_marmoset)
-plt.xlim(0, 2)
+# plt.xlim(0, 4)
 
 print('mouse modulates by {}. marmoset by {}'.format(2**m1, 2**m2))
 
@@ -303,33 +449,74 @@ plt.xlabel('Session ID')
 plt.legend()
 
 #%% plot single session
-# flist = os.listdir(apath)
-# subject = 'marmoset'
-# flist = [f for f in flist if subject in f]
 
-# isess = 55
-# aname = dstats[isess]['fname']
+import torch.nn.functional as F
+
 aname = 'marmoset_23.pkl'
 fname = aname.replace('.pkl', '.mat')
 
 print(aname)
 
-refit = True
+refit = False
 
 if refit:
-    a = fit_session(fpath, apath, fname, aname, stim_reg_vals={'l2':0.1}, reg_vals={'l2':0.01})
-
-
-#%%
+    a = fit_session(fpath, apath, fname, aname, ntents=5)
 
 with open(apath + aname, 'rb') as f:
     das = pickle.load(f)
 
-import torch.nn.functional as F
+r2affine = das['affine']['r2test']
+r2stim = das['stimdrift']['r2test']
+r2offset = das['offset']['r2test']
 
-id = np.argmax(das['affineadjust']['zgainav'].std(dim=0).numpy())
-zg = F.relu(1 + das['affineadjust']['zgainav'][:,id].unsqueeze(1))
-zh = das['affineadjust']['zoffsetav'].mean(dim=1).unsqueeze(1)
+no_gain = np.where(r2affine < r2stim)[0]
+has_offset = no_gain[np.where(r2offset[no_gain] > r2stim[no_gain])[0]]
+
+running = das['data']['running']
+mod = das['affine']['model']
+mod.to('cpu')
+
+robs = torch.tensor(das['data']['robs'])
+
+# latent gain gets datafiltered input
+s = robs.std(dim=0)
+mu = robs.mean(dim=0)
+dfs = torch.abs( (robs - mu) / s) < 10
+
+robs = robs * dfs
+
+zg = mod.latent_gain(robs)
+zh = mod.latent_offset(robs)
+
+# get the average sign of the gain to find positive
+sflipg = np.sign(np.mean(np.sign(mod.readout_gain.get_weights())))
+sfliph = np.sign(np.mean(np.sign(mod.readout_offset.get_weights())))
+
+zglatent = F.relu(1 + zg*sflipg).detach().cpu() # convert latent to a single gain
+zhlatent = zh * sfliph # flip sign if most of the population has a negative weight
+
+# get population level gains
+zgpop = F.relu(1 + mod.readout_gain(zg).detach().cpu())
+# get population level offsets
+zhpop = mod.readout_offset(zh).detach().cpu()
+
+zgpop[:,no_gain] = 1.0
+zhpop[:,no_gain] = 0.0
+
+
+plt.figure(figsize=(10, 5))
+ax = plt.subplot()
+plt.plot(running, 'k')
+ax2 = plt.twinx(ax)
+f = plt.plot(zglatent)
+
+
+
+
+
+#%%
+
+zh = das['affine']['zoffsetav'].mean(dim=1).unsqueeze(1)
 nlatent = zg.shape[1]
 running = das['data']['running']
 pupil = das['data']['pupil']
@@ -371,16 +558,15 @@ plt.legend(['stationary', 'running'])
 plt.show()
 
 r2test = []
-r2test.append(das['stim']['r2test'].numpy())
+r2test.append(das['drift']['r2test'].numpy())
 r2test.append(das['stimdrift']['r2test'].numpy())
 r2test.append(das['offset']['r2test'].numpy())
 r2test.append(das['gain']['r2test'].numpy())
 r2test.append(das['affine']['r2test'].numpy())
-r2test.append(das['affineadjust']['r2test'].numpy())
 plt.violinplot(r2test, showmeans=True)
 plt.axhline(0, color='k')
 plt.title(subject + ' {}'.format(isess))
-plt.ylim(-1, 1)
+plt.ylim(-.1, 1)
 plt.show()
 
 
@@ -391,8 +577,9 @@ pupil = das['data']['pupil']
 
 mod2 = das['affine']['model']
 
+#%%
 plt.figure()
-plt.plot(mod2.stim.weight.T.detach().cpu())
+plt.imshow(mod2.stim.weight.detach().cpu())
 plt.show()
 
 #%%
@@ -430,34 +617,34 @@ for i in range(nlatent):
     plt.title("gain latent %d" % i)
 
 
-plt.figure()
-for i in range(nlatent):
-    plt.subplot(1,nlatent,i + 1)
-    plt.plot(pupil, zg[:,i], '.')
-    plt.xlabel('pupil area')
-    plt.ylabel('gain latent %d' % i)
+# plt.figure()
+# for i in range(nlatent):
+#     plt.subplot(1,nlatent,i + 1)
+#     plt.plot(pupil, zg[:,i], '.')
+#     plt.xlabel('pupil area')
+#     plt.ylabel('gain latent %d' % i)
 
-plt.figure()
-for i in range(nlatent):
-    plt.subplot(1,nlatent,i + 1)
-    plt.plot(running, zg, '.')
-    plt.xlabel('running speed')
-    plt.ylabel('gain latent %d' % i)
+# plt.figure()
+# for i in range(nlatent):
+#     plt.subplot(1,nlatent,i + 1)
+#     plt.plot(running, zg, '.')
+#     plt.xlabel('running speed')
+#     plt.ylabel('gain latent %d' % i)
 
-plt.figure()
-for i in range(nlatent):
-    plt.subplot(1,nlatent,i + 1)
-    plt.plot(pupil, zh[:,i], '.')
-    plt.xlabel('pupil area')
-    plt.ylabel('add latent %d' % i)
+# plt.figure()
+# for i in range(nlatent):
+#     plt.subplot(1,nlatent,i + 1)
+#     plt.plot(pupil, zh[:,i], '.')
+#     plt.xlabel('pupil area')
+#     plt.ylabel('add latent %d' % i)
 
 
-plt.figure()
-for i in range(nlatent):
-    plt.subplot(1,nlatent,i + 1)
-    plt.plot(running, zh, '.')
-    plt.xlabel('running speed')
-    plt.ylabel('add latent %d' % i)
+# plt.figure()
+# for i in range(nlatent):
+#     plt.subplot(1,nlatent,i + 1)
+#     plt.plot(running, zh, '.')
+#     plt.xlabel('running speed')
+#     plt.ylabel('add latent %d' % i)
 
 #%
 
@@ -480,11 +667,11 @@ plt.legend(['stationary', 'running'])
 #%%
 r2_1 = das['stimdrift']['r2test']
 r2_2 = das['affine']['r2test']
-r2_3 = das['affineadjust']['r2test']
+# r2_3 = das['affineadjust']['r2test']
 
 plt.figure()
 plt.plot(r2_1, r2_2, '.')
-plt.plot(r2_1, r2_3, '.')
+# plt.plot(r2_1, r2_3, '.')
 plt.plot(plt.xlim(), plt.xlim(), 'k')
 plt.xlabel('r^2 (Stimulus Only + Neuron Drift)')
 plt.ylabel('r^2 (Stimulus + Latents)')
@@ -527,10 +714,10 @@ if sortmode == 'none':
 
 plt.figure(figsize=(10,5))
 plt.subplot(2,1,1)
-plt.imshow(np.sqrt(robs[:,inds].T), aspect='auto', cmap='Blues')
+plt.imshow(robs[:,inds].T, aspect='auto', cmap='Blues')
 plt.axis("off")
 plt.plot([0, 100], [robs.shape[1], robs.shape[1]], 'k', linewidth=5)
-plt.plot([robs.shape[0],robs.shape[0]], [robs.shape[1]-100, robs.shape[1]], 'k', linewidth=5)
+plt.plot([robs.shape[0],robs.shape[0]], [robs.shape[1]-10, robs.shape[1]], 'k', linewidth=5)
 
 # add scale bar with annotation
 # plt.plot([0, 100], [robs.shape[1], robs.shape[1]], 'k', linewidth=5)
@@ -546,11 +733,11 @@ plt.imshow(zg[:,inds].T, aspect='auto', cmap='Blues')
 plt.axis("off")
 plt.title("Gain Modulation")
 plt.plot([0, 100], [robs.shape[1], robs.shape[1]], 'k', linewidth=5)
-plt.plot([robs.shape[0],robs.shape[0]], [robs.shape[1]-100, robs.shape[1]], 'k', linewidth=5)
+plt.plot([robs.shape[0],robs.shape[0]], [robs.shape[1]-10, robs.shape[1]], 'k', linewidth=5)
 plt.annotate('100 Trials', xy=(105, robs.shape[1] - 0), xytext=(105, robs.shape[1] + 35),
                 arrowprops=dict(facecolor='none', arrowstyle='-'),   
                 horizontalalignment='center', verticalalignment='center')
-plt.plot(np.maximum(running, 0).flatten()*5, 'r')
+# plt.plot(np.maximum(running, 0).flatten()*5, 'r')
 plt.savefig("../Figures/npx_spikes_sorted_%s.pdf" % sortmode)
 
 plt.figure(figsize=(10,5))
@@ -564,11 +751,11 @@ plt.annotate('100 Trials', xy=(105, -10), xytext=(105, -10),
                 arrowprops=dict(facecolor='none', arrowstyle='-'),   
                 horizontalalignment='center', verticalalignment='center')
 plt.axis("off")
-plt.plot([robs.shape[0],robs.shape[0]], [0, 10], 'k', linewidth=5)
+# plt.plot([robs.shape[0],robs.shape[0]], [0, 5], 'k', linewidth=5)
 
 plt.subplot(2,1,2)
 plt.plot()
-plt.savefig("../Figures/npx_running.pdf")
+# plt.savefig("../Figures/npx_running.pdf")
 
 res = spearmanr(zg[:,id], running)
 
@@ -585,7 +772,7 @@ plt.annotate('100 Trials', xy=(105, -10), xytext=(105, -10),
                 arrowprops=dict(facecolor='none', arrowstyle='-'),   
                 horizontalalignment='center', verticalalignment='center')
 
-plt.savefig("../Figures/npx_shared_gain_offset.pdf")
+# plt.savefig("../Figures/npx_shared_gain_offset.pdf")
 
 
 NC = robs.shape[1]
