@@ -1,7 +1,6 @@
 
 import os, sys
 from importlib_metadata import requires
-from matplotlib import use
 
 from NDNT.training.trainer import Trainer
 sys.path.insert(0, '/mnt/Data/Repos/')
@@ -29,37 +28,21 @@ Model fitting procedure for the shared gain / offset model
 
 '''
 
-def get_dataloaders(ds, folds=5, batch_size=64, use_dropout=False, seed=1234):
-    
-    np.random.seed(seed)
+def get_dataloaders(ds, folds=5, batch_size=64):
+    np.random.seed(1234)
 
     NT = len(ds)
+    n_val = NT//folds
+    val_inds = np.random.choice(range(NT), size=n_val, replace=False)
+    train_inds = np.setdiff1d(range(NT), val_inds)
 
-    if use_dropout: # training and test set are the same, but differ in their datafilters
-        from copy import deepcopy
-        train_ds = deepcopy(ds)
-        val_ds = deepcopy(ds)
-        NT, NC = ds.covariates['robs'].shape
-        p_holdout = 1/folds
-
-        Mask = np.random.rand(NT, NC) > p_holdout
-        train_ds.covariates['dfs'] = torch.tensor(np.logical_and(train_ds.covariates['dfs'].cpu().numpy(), Mask), dtype=torch.float32)
-        val_ds.covariates['dfs'] = torch.tensor(np.logical_and(val_ds.covariates['dfs'].cpu().numpy(), ~Mask), dtype=torch.float32)
-        train_inds = Mask
-        val_inds = ~Mask
-    
-    else: # conventional training and test set
-        n_val = NT//folds
-        val_inds = np.random.choice(range(NT), size=n_val, replace=False)
-        train_inds = np.setdiff1d(range(NT), val_inds)
-
-        train_ds = Subset(ds, train_inds.tolist())
-        val_ds = Subset(ds, val_inds.tolist())
+    train_ds = Subset(ds, train_inds.tolist())
+    val_ds = Subset(ds, val_inds.tolist())
 
     train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True)
 
-    return train_dl, val_dl, (train_inds, val_inds)
+    return train_dl, val_dl
         
 def rsquared(y, yhat, dfs=None):
     if dfs is None:
@@ -72,76 +55,41 @@ def rsquared(y, yhat, dfs=None):
     return r2.detach().cpu()
 
 def fit_model(model, train_dl, val_dl,
-    lr=1e-3, max_epochs=5,
-    wd=0.01,
-    max_iter=10000,
-    use_lbfgs=False,
-    verbose=0,
-    early_stopping_patience=10,
-    use_warmup=True,
-    seed=1234,
+    verbose=1,
+    unit_weight=False,
     device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu")):
 
     from torch.optim import AdamW
     from torch.optim.lr_scheduler import OneCycleLR
-    from NDNT.training import Trainer, EarlyStopping, LBFGSTrainer
-    model.prepare_regularization()
+    from NDNT.training import Trainer, EarlyStopping
 
-    if use_lbfgs:
-        optimizer = torch.optim.LBFGS(model.parameters(),
-                    history_size=10,
-                    max_iter=max_iter,
-                    tolerance_change=1e-9,
-                    line_search_fn=None,
-                    tolerance_grad=1e-5)
+    optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=0.01)
+    scheduler = OneCycleLR(optimizer, max_lr=0.01,
+        steps_per_epoch=len(train_dl), epochs=20000)
 
-        trainer = LBFGSTrainer(
-            optimizer=optimizer,
+    earlystopping = EarlyStopping(patience=500, verbose=False)
+
+    trainer = Trainer(model, optimizer,
+            scheduler,
             device=device,
-            accumulate_grad_batches=len(train_dl),
-            max_epochs=1,
             optimize_graph=True,
+            max_epochs=20000,
+            early_stopping=earlystopping,
             log_activations=False,
-            set_grad_to_none=False,
+            scheduler_after='batch',
+            scheduler_metric=None,
             verbose=verbose)
 
-        trainer.fit(model, train_dl.dataset[:], seed=seed)
+    if unit_weight:
+        r = 0
+        for data in train_dl:
+            r += data['robs'].sum(dim=0)
 
-    else:
-        earlystopping = EarlyStopping(patience=early_stopping_patience, verbose=False)
-        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=wd)
-        if use_warmup:
-            optimizer.param_groups[0]['lr'] = 1e-5
-            warmup_epochs = 5
-            trainer = Trainer(model, optimizer,
-                device=device,
-                optimize_graph=True,
-                early_stopping=earlystopping,
-                max_epochs=warmup_epochs,
-                log_activations=True,
-                verbose=verbose)
+        r = r.cpu()    
+        model.loss.unit_weighting = True
+        model.loss.unit_weights = (1/r) / (1/r).sum()
 
-            trainer.fit(model, train_dl, val_dl, seed=seed)
-            trainer.optimizer.param_groups[0]['lr'] = lr
-            trainer.max_epochs = max_epochs
-            
-            trainer.fit(model, train_dl, val_dl, seed=seed)
-        else:
-        # scheduler = OneCycleLR(optimizer, max_lr=lr,
-        #     steps_per_epoch=len(train_dl), epochs=max_epochs)
-
-            earlystopping = EarlyStopping(patience=early_stopping_patience, verbose=False)
-            trainer = Trainer(model, optimizer,
-                    device=device,
-                    optimize_graph=True,
-                    max_epochs=max_epochs,
-                    early_stopping=earlystopping,
-                    log_activations=True,
-                    scheduler_after='batch',
-                    scheduler_metric=None,
-                    verbose=verbose)
-
-            trainer.fit(model, train_dl, val_dl, seed=seed)
+    trainer.fit(model, train_dl, val_dl)
 
 def get_data(fpath, fname, num_tents=10,
         normalize_robs=True,
@@ -186,8 +134,7 @@ def get_data(fpath, fname, num_tents=10,
         'robs': torch.tensor(robs),
         'dfs': torch.tensor(dfs, dtype=torch.float32),
         'stim': torch.tensor(stim, dtype=torch.float32),
-        'tents': torch.tensor(tents, dtype=torch.float32),
-        'indices': torch.tensor(np.arange(len(trial_ix)), dtype=torch.int64)}
+        'tents': torch.tensor(tents, dtype=torch.float32)}
 
     ds = GenericDataset(data, device=device)
 
@@ -199,40 +146,28 @@ def eval_model(mod2, ds, val_ds):
     mod2 = mod2.to(ds.device)
     rhat = mod2(sample).detach().cpu().numpy()
 
-    # initialize gains and offsets to zero
-    zgav = torch.zeros(sample['robs'].shape[0], 1, device='cpu')
-    zg = torch.zeros(sample['robs'].shape[0], 1, device='cpu')
-    zhav = torch.zeros(sample['robs'].shape[0], 1, device='cpu')
-    zh = torch.zeros(sample['robs'].shape[0], 1, device='cpu')
-
-    if hasattr(mod2, 'tents_as_input'):
-        if mod2.tents_as_input:
-            latent_input = sample['tents']
-        else:
-            latent_input = sample['robs']
-
-        if hasattr(mod2, 'latent_gain'):
-            zg = mod2.latent_gain(latent_input)
-            
-            zgav = mod2.readout_gain(zg).detach().cpu()
-            zg = zg.detach().cpu()
-            
-        if hasattr(mod2, 'latent_offset'):
-            zh = mod2.latent_offset(latent_input)
-            zhav = mod2.readout_offset(zh).detach().cpu()
-            zh = zh.detach().cpu()
-            
+    if mod2.tents_as_input:
+        latent_input = sample['tents']
     else:
-        if hasattr(mod2, 'gain_mu'):
-            zg = mod2.gain_mu.weight.detach()
-            zgav = mod2.readout_gain(zg).detach().cpu()
-            zg = zg.cpu().clone()
+        latent_input = sample['robs']
+
+    if hasattr(mod2, 'latent_gain'):
+        zg = mod2.latent_gain(latent_input)
         
-        if hasattr(mod2, 'offset_mu'):
-            zh = mod2.offset_mu.weight.detach()
-            zhav = mod2.readout_offset(zh).detach().cpu()
-            zh = zh.cpu().clone()
-        
+        zgav = mod2.readout_gain(zg).detach().cpu()
+        zg = zg.detach().cpu()
+    else:
+        zgav = torch.zeros(sample['robs'].shape[0], 1, device='cpu')
+        zg = torch.zeros(sample['robs'].shape[0], 1, device='cpu')
+
+    if hasattr(mod2, 'latent_offset'):
+        zh = mod2.latent_offset(latent_input)
+        zhav = mod2.readout_offset(zh).detach().cpu()
+        zh = zh.detach().cpu()
+    else:
+        zhav = torch.zeros(sample['robs'].shape[0], 1, device='cpu')
+        zh = torch.zeros(sample['robs'].shape[0], 1, device='cpu')
+
     sample = val_ds[:]
     robs_ = sample['robs'].detach().cpu()
     rhat_ = mod2(sample).detach().cpu()
@@ -248,11 +183,6 @@ def fit_session(fpath,
         ntents=5):
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-    seed = 1234
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
 
     ds, dat = get_data(fpath, fname, ntents, device)
 
@@ -283,9 +213,7 @@ def fit_session(fpath,
     '''
     Build Train / Test sets
     '''
-    train_dl, val_dl, indices = get_dataloaders(ds, batch_size=64)
-    train_inds = indices[0]
-    val_inds = indices[1]
+    train_dl, val_dl = get_dataloaders(ds, batch_size=64)
 
     '''
     Baseline model: has no stimulus, can capture slow drift in firing rate for each unit using b0-splines
@@ -308,7 +236,7 @@ def fit_session(fpath,
     mod0.prepare_regularization()
 
     print("Fitting baseline model")
-    fit_model(mod0, train_dl, val_dl, verbose=0, use_lbfgs=True)
+    fit_model(mod0, train_dl, val_dl, verbose=0)
     print("Done")
 
     '''
@@ -326,15 +254,15 @@ def fit_session(fpath,
             tents_as_input=False,
             output_nonlinearity='Identity',
             stim_act_func='lin',
-            stim_reg_vals={'l2':0.01},
-            reg_vals={'l2':1},
+            stim_reg_vals={'l2':0.00},
+            reg_vals={'l2':0.00},
             act_func='lin')
 
     mod1.drift.weight.data = mod0.drift.weight.data.clone()
     mod1.prepare_regularization()
 
     print("Fitting Stimulus Model")
-    fit_model(mod1, train_dl, val_dl, verbose=0, use_lbfgs=True)
+    fit_model(mod1, train_dl, val_dl, verbose=0)
     print("Done")
 
     res0 = eval_model(mod0, ds, val_dl.dataset)
@@ -364,8 +292,8 @@ def fit_session(fpath,
                 tents_as_input=False,
                 output_nonlinearity='Identity',
                 stim_act_func='lin',
-                stim_reg_vals={'l2':0.01},
-                reg_vals={'l2':1},
+                stim_reg_vals={'l2':0.00},
+                reg_vals={'l2':0.00},
                 act_func='lin')
 
     mod2.drift.weight.data = mod1.drift.weight.data[:,cids].clone()
@@ -373,12 +301,12 @@ def fit_session(fpath,
     mod2.bias.data = mod1.bias.data[cids].clone()
     mod2.drift.weight.requires_grad = False # individual neuron drift is fixed
     mod2.stim.weight.requires_grad = True # stimulus fit at same time as gain
-    mod2.bias.requires_grad = True
+    mod2.bias.requires_grad = False
 
     mod2.prepare_regularization()
 
     print("Fitting Affine Model")
-    fit_model(mod2, train_dl, val_dl, verbose=0, use_lbfgs=True)
+    fit_model(mod2, train_dl, val_dl, verbose=0)
     print("Done")
 
     ''' 
@@ -395,8 +323,8 @@ def fit_session(fpath,
                 tents_as_input=False,
                 output_nonlinearity='Identity',
                 stim_act_func='lin',
-                stim_reg_vals={'l2':0.01},
-                reg_vals={'l2':1},
+                stim_reg_vals={'l2':0.00},
+                reg_vals={'l2':0.00},
                 act_func='lin')
 
     mod3.drift.weight.data = mod2.drift.weight.data.clone()
@@ -404,14 +332,14 @@ def fit_session(fpath,
     mod3.bias.data = mod2.bias.data.clone()
     mod3.latent_gain.weight.data = mod2.latent_gain.weight.data.clone()
     mod3.readout_gain.weight.data = mod2.readout_gain.weight.data.clone()
-    mod3.drift.weight.requires_grad = True
+    mod3.drift.weight.requires_grad = False
     mod3.stim.weight.requires_grad = True
-    mod3.bias.requires_grad = True
+    mod3.bias.requires_grad = False
 
     mod3.prepare_regularization()
 
     print("Fitting Gain Model")
-    fit_model(mod3, train_dl, val_dl, verbose=0, use_lbfgs=True)
+    fit_model(mod3, train_dl, val_dl, verbose=0)
     print("Done")
 
     ''' 
@@ -428,8 +356,8 @@ def fit_session(fpath,
                 tents_as_input=False,
                 output_nonlinearity='Identity',
                 stim_act_func='lin',
-                stim_reg_vals={'l2':0.01},
-                reg_vals={'l2':1},
+                stim_reg_vals={'l2':0.00},
+                reg_vals={'l2':0.00},
                 act_func='lin')
 
     mod4.drift.weight.data = mod2.drift.weight.data.clone()
@@ -439,12 +367,12 @@ def fit_session(fpath,
     mod4.readout_offset.weight.data = mod2.readout_offset.weight.data.clone()
     mod4.drift.weight.requires_grad = False
     mod4.stim.weight.requires_grad = True
-    mod4.bias.requires_grad = True
+    mod4.bias.requires_grad = False
 
     mod4.prepare_regularization()
 
     print("Fitting Offset Model")
-    fit_model(mod4, train_dl, val_dl, verbose=0, use_lbfgs=True)
+    fit_model(mod4, train_dl, val_dl, verbose=0)
     print("Done")
 
     sample = ds[:]
@@ -457,8 +385,7 @@ def fit_session(fpath,
     das['data'] = {'direction': direction,
         'frequency': freq,
         'robs': robs,
-        'pupil': pupil, 'running': running, 'train_inds': train_inds,
-        'val_inds': val_inds}
+        'pupil': pupil, 'running': running}
     
     '''Evaluate Models'''
     # eval model 0 (Baseline)
@@ -490,12 +417,12 @@ def fit_session(fpath,
     ''' Gain model'''
     moddict3 = eval_model(mod3, ds, val_dl.dataset)
     moddict3['model'] = mod3
-    das['gain'] = moddict3
+    das['offset'] = moddict3
 
     ''' Offset model'''
     moddict4 = eval_model(mod4, ds, val_dl.dataset)
     moddict4['model'] = mod4
-    das['offset'] = moddict4
+    das['gain'] = moddict4
 
     print("Saving...")
     with open(os.path.join(apath, aname), 'wb') as f:

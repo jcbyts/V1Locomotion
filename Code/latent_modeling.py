@@ -45,7 +45,7 @@ import pickle
 nsessions = len(flist)
 # nsessions = 10
 sess_success = np.zeros(nsessions)
-overwrite = False
+overwrite = True
 for isess in range(nsessions):
     print(isess)
     fname = flist[isess]
@@ -67,7 +67,217 @@ for isess in range(nsessions):
     except:
         print("Failed to fit model")
         continue
-        
+
+
+#%% quick test
+
+def rsquared(y, yhat):
+    ybar = y.mean(dim=0)
+    sstot = torch.sum( (y - ybar)**2, dim=0)
+    ssres = torch.sum( (y - yhat)**2, dim=0)
+    r2 = 1 - ssres/sstot
+
+    return r2.detach().cpu()
+
+for isess in range(nsessions):
+    print(isess)
+    fname = flist[isess]
+    aname = fname.replace('.mat', '.pkl')
+
+    print("Loading analyses")
+    import pickle
+    with open(apath + aname, 'rb') as f:
+        das = pickle.load(f)
+
+    np.random.seed(1234)
+
+    robs = das['data']['robs']
+    NT, NC = robs.shape
+
+    folds=5
+    n_val = NT//folds
+    val_inds = np.random.choice(range(NT), size=n_val, replace=False)
+    train_inds = np.setdiff1d(range(NT), val_inds)
+
+
+    from scipy.linalg import svd
+    C = np.cov(robs[train_inds,:].T)
+    u,s,v = svd(C)
+
+    train_err = []
+    test_err = []
+    for nlatent in range(1, 10):
+
+        pcs = u[:,:nlatent] * s[:nlatent]
+        pmat = torch.linalg.pinv(torch.tensor(pcs))
+
+        x = torch.tensor(robs[train_inds,:])
+        latent = (pmat@robs[train_inds,:].T).T
+        xhat = (latent[:,:nlatent]@pcs[:,:nlatent].T).detach().clone()
+        te = rsquared(x, xhat)
+        train_err.append( (nlatent, te.mean().item()))
+
+        x = torch.tensor(robs[val_inds,:])
+        latent = (pmat@robs[val_inds,:].T).T
+        xhat = (latent[:,:nlatent]@pcs[:,:nlatent].T).detach().clone()
+        te = rsquared(x, xhat)
+        test_err.append( (nlatent, te.mean().item()))
+
+    fig, ax = plt.subplots(1, 1, figsize=(4, 3.5))
+    # ax.plot(*list(zip(*train_err)), 'o-b', label='Train Data')
+    ax.plot(*list(zip(*test_err)), 'o-r', label='Test Data')
+    ax.set_ylabel('Var Explained')
+    ax.set_xlabel('Number of PCs')
+    ax.set_title('PCA')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    plt.axhline(das['gain']['r2test'].mean().item(), color='g')
+    # plt.plot(0*das['gain']['r2test'], das['gain']['r2test'], 'o', color='g', label='Gain')
+    plt.plot(0, das['gain']['r2test'].mean().item(), 'o', color='g', label='Gain')
+    plt.plot(0, das['affine']['r2test'].mean().item(), 'o', color='m', label='Affine')
+    plt.plot(0, das['stimdrift']['r2test'].mean().item(), 'o', color='k', label='stimulus')
+
+    ax.legend()
+    plt.ylim(-1, 1)
+    plt.title(fname)
+    fig.tight_layout()
+    plt.show()
+
+
+
+
+#%%
+from numpy.random import randn, rand
+from scipy.optimize import minimize
+import itertools
+from scipy.spatial.distance import cdist
+
+# def censored_lstsq(A, B, M):
+#     """Solves least squares problem subject to missing data.
+
+#     Note: uses a broadcasted solve for speed.
+
+#     Args
+#     ----
+#     A (ndarray) : m x r matrix
+#     B (ndarray) : m x n matrix
+#     M (ndarray) : m x n binary matrix (zeros indicate missing values)
+
+#     Returns
+#     -------
+#     X (ndarray) : r x n matrix that minimizes norm(M*(AX - B))
+#     """
+
+#     # Note: we should check A is full rank but we won't bother...
+
+#     # if B is a vector, simply drop out corresponding rows in A
+#     if B.ndim == 1 or B.shape[1] == 1:
+#         return np.linalg.leastsq(A[M], B[M])[0]
+
+#     # else solve via tensor representation
+#     rhs = np.dot(A.T, M * B).T[:,:,None] # n x r x 1 tensor
+#     T = np.matmul(A.T[None,:,:], M.T[:,:,None] * A[None,:,:]) # n x r x r tensor
+#     return np.squeeze(np.linalg.solve(T, rhs)).T # transpose to get r x n
+
+def censored_lstsq(A, B, M):
+    """Solves least squares problem with missing data in B
+    Note: uses a broadcasted solve for speed.
+    Args
+    ----
+    A (ndarray) : m x r matrix
+    B (ndarray) : m x n matrix
+    M (ndarray) : m x n binary matrix (zeros indicate missing values)
+    Returns
+    -------
+    X (ndarray) : r x n matrix that minimizes norm(M*(AX - B))
+    """
+
+    if A.ndim == 1:
+        A = A[:,None]
+
+    # else solve via tensor representation
+    rhs = np.dot(A.T, M * B).T[:,:,None] # n x r x 1 tensor
+    T = np.matmul(A.T[None,:,:], M.T[:,:,None] * A[None,:,:]) # n x r x r tensor
+    try:
+        # transpose to get r x n
+        return np.squeeze(np.linalg.solve(T, rhs), axis=-1).T
+    except:
+        r = T.shape[1]
+        T[:,np.arange(r),np.arange(r)] += 1e-6
+        return np.squeeze(np.linalg.solve(T, rhs), axis=-1).T
+
+
+def cv_pca(data, rank, M=None, p_holdout=0.1, nonneg=False):
+    """Fit PCA or NMF while holding out a fraction of the dataset.
+    """
+
+    # choose solver for alternating minimization
+    if nonneg:
+        solver = censored_nnlstsq
+    else:
+        solver = censored_lstsq
+
+    # create masking matrix
+    if M is None:
+        M = np.random.rand(*data.shape) > p_holdout
+
+    # initialize U randomly
+    if nonneg:
+        U = np.random.rand(data.shape[0], rank)
+    else:
+        U = np.random.randn(data.shape[0], rank)
+
+    # fit pca/nmf
+    for itr in range(10):
+        Vt = solver(U, data, M)
+        U = solver(Vt.T, data.T, M.T).T
+        resid = np.dot(U, Vt) - data
+        print('%d) %.3f' %(itr, np.mean(resid[M]**2)))
+
+    # return result and test/train error
+    resid = np.dot(U, Vt) - data
+    total_err = data - np.mean(data, axis=0)
+    train_err = 1 - np.sum(resid[M]**2) / np.sum(total_err[M]**2)
+    test_err = 1 - np.sum(resid[~M]**2) / np.sum(total_err[~M]**2)
+    return U, Vt, train_err, test_err
+
+
+def plot_pca(data):
+    # parameters
+    # N, R = 150, 4
+    noise = 2
+    N,R = data.shape
+    replicates = 1
+    ranks = np.arange(1, 8)
+
+    # initialize
+    U = np.random.randn(N, R)
+    Vt = np.random.randn(R, N)
+    # data = np.dot(U, Vt) + noise*np.random.randn(N, N)
+
+    train_err, test_err = [], []
+
+    # fit models
+    for rnk, _ in itertools.product(ranks, range(replicates)):
+        tr, te = cv_pca(data, rnk)[2:]
+        train_err.append((rnk, tr))
+        test_err.append((rnk, te))
+
+    # make plot
+    fig, ax = plt.subplots(1, 1, figsize=(4, 3.5))
+    ax.plot(*list(zip(*train_err)), 'o-b', label='Train Data')
+    ax.plot(*list(zip(*test_err)), 'o-r', label='Test Data')
+    ax.set_ylabel('Mean Squared Error')
+    ax.set_xlabel('Number of PCs')
+    ax.set_title('PCA')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.legend()
+    plt.ylim(0, 1)
+    fig.tight_layout()
+    # fig.savefig('../../img/pca-crossval/pca_cv_curve.pdf')
+
+plot_pca(robs)
 
 #%%
 from scipy.stats import spearmanr
@@ -95,7 +305,7 @@ def sessstats(das, fname=None):
 
     running = das['data']['running']
     pupil = das['data']['pupil']
-    mod = das['affine']['model']
+    mod = das['gain']['model']
     mod.to('cpu')
 
     robs = torch.tensor(das['data']['robs'])
@@ -108,11 +318,11 @@ def sessstats(das, fname=None):
     robs = robs * dfs
 
     zg = mod.latent_gain(robs)
-    zh = mod.latent_offset(robs)
+    zh = 0*zg.detach().clone() #mod.latent_offset(robs)
 
     # get the average sign of the gain to find positive
     sflipg = np.sign(np.mean(np.sign(mod.readout_gain.get_weights())))
-    sfliph = np.sign(np.mean(np.sign(mod.readout_offset.get_weights())))
+    sfliph = 1 #np.sign(np.mean(np.sign(mod.readout_offset.get_weights())))
 
     zglatent = F.relu(1 + zg*sflipg).detach().cpu() # convert latent to a single gain
     zhlatent = zh.detach().cpu() * sfliph # flip sign if most of the population has a negative weight
@@ -120,10 +330,10 @@ def sessstats(das, fname=None):
     # get population level gains
     zgpop = F.relu(1 + mod.readout_gain(zg).detach().cpu())
     # get population level offsets
-    zhpop = mod.readout_offset(zh).detach().cpu()
+    # zhpop = mod.readout_offset(zh).detach().cpu()
 
-    zgpop[:,no_gain] = 1.0
-    zhpop[:,no_offset] = 0.0
+    # zgpop[:,no_gain] = 1.0
+    # zhpop[:,no_offset] = 0.0
 
     zglatent[zglatent < 1e-6] = 1e-6
     zg = (zglatent).log2()
@@ -196,7 +406,7 @@ modellist = ['drift', 'stimdrift', 'offset', 'gain', 'affine']
 for f in modellist:
     r2.append(np.concatenate([d['r2models'][f] for d in dstats]))
 
-goodix = np.logical_and(r2[1] > 0 , r2[-1] > 0)
+goodix = np.logical_and(r2[1] > 0 , ~np.isnan(r2[3]))
 # for i in range(len(modellist)):
 #     r2[i] = r2[i][goodix]
 
@@ -358,8 +568,7 @@ run_stats_check(dstats, field1='zhlatent', field2='pupil', plot_individual=False
 #%% measure of Total gain fluctuations
 
 
-
-bins = np.linspace(np.min(gainrange), np.max(gainrange), 200)
+bins = np.linspace(np.min(gainrange), np.max(gainrange), 50)
 # bins = np.linspace(np.min(gainrange), 10, 100)
 plt.figure()
 ax = plt.subplot()
@@ -382,11 +591,13 @@ plt.plot(m2, my, 'v', color=clr_marmoset)
 
 print('mouse modulates by {}. marmoset by {}'.format(2**m1, 2**m2))
 
-xax = np.log2(np.arange(1, 4, .5))
+xax = np.log2(np.arange(1, 5, 1))
 # xax = np.linspace(0, 2, 5)
 ax.set_xticks(xax)
 ax.set_xticklabels(['%.1fx' %s for s in 2**xax])
 
+from scipy.stats import mannwhitneyu
+res = mannwhitneyu(gainrange[subjid==1], gainrange[subjid==0])
 
 #%% Correlation with different variables
 gainrunrho = np.asarray([d['gainruncorr'][0] for d in dstats])
@@ -452,7 +663,7 @@ plt.legend()
 
 import torch.nn.functional as F
 
-aname = 'marmoset_23.pkl'
+aname = 'marmoset_11.pkl'
 fname = aname.replace('.pkl', '.mat')
 
 print(aname)
@@ -575,9 +786,10 @@ pupil = das['data']['pupil']
 
 # plt.plot(running)
 
-mod2 = das['affine']['model']
+
 
 #%%
+mod2 = das['affine']['model']
 plt.figure()
 plt.imshow(mod2.stim.weight.detach().cpu())
 plt.show()
@@ -666,7 +878,7 @@ plt.legend(['stationary', 'running'])
 
 #%%
 r2_1 = das['stimdrift']['r2test']
-r2_2 = das['affine']['r2test']
+r2_2 = das['gain']['r2test']
 # r2_3 = das['affineadjust']['r2test']
 
 plt.figure()
@@ -791,7 +1003,7 @@ plt.plot([0, 100], [0,0], 'k', linewidth=5)
 plt.axis("off")
 plt.savefig("../Figures/npx_shared_gain_loaded.pdf")
 #%%
-fname = 'marmoset_23.mat'
+fname = 'marmoset_11.mat'
 dat = loadmat(os.path.join(fpath, fname))
 
 ecc = np.hypot(dat['rfcenter_x'].flatten(), dat['rfcenter_y'].flatten())
