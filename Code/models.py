@@ -34,6 +34,12 @@ class Encoder(nn.Module):
         
         if hasattr(self, 'latent_offset'):
             rloss += self.latent_offset.compute_reg_loss()
+
+        if hasattr(self, 'gain_mu'):
+            rloss += self.gain_mu.compute_reg_loss()
+        
+        if hasattr(self, 'offset_mu'):
+            rloss += self.offset_mu.compute_reg_loss()
         
         if self.drift is not None:
             rloss += self.drift.compute_reg_loss()
@@ -45,6 +51,14 @@ class Encoder(nn.Module):
         if self.stim is not None:
             self.stim.reg.normalize = normalize_reg
             self.stim.reg.build_reg_modules()
+
+        if hasattr(self, 'gain_mu'):
+                self.gain_mu.reg.normalize = normalize_reg
+                self.gain_mu.reg.build_reg_modules()
+        
+        if hasattr(self, 'offset_mu'):
+                self.offset_mu.reg.normalize = normalize_reg
+                self.offset_mu.reg.build_reg_modules()
 
         if hasattr(self, 'readout_gain'):
                 self.readout_gain.reg.normalize = normalize_reg
@@ -97,6 +111,140 @@ class Encoder(nn.Module):
         
         return {'loss': loss, 'val_loss': loss, 'reg_loss': None}        
 
+class SharedLatentGain(Encoder):
+    def __init__(self, stim_dims, 
+            NC=None,
+            NT=None,
+            cids=None,
+            num_latent=1,
+            num_tents=10,
+            include_stim=True,
+            include_gain=True,
+            include_offset=True,
+            tents_as_input=False,
+            output_nonlinearity='Identity',
+            stim_act_func='lin',
+            stim_reg_vals={'l2':0.0},
+            reg_vals={'l2':0.001},
+            readout_reg_vals={'l2':0.001}):
+
+
+        super().__init__()
+
+        NCTot = deepcopy(NC)
+        if cids is None:
+            self.cids = list(range(NC))
+        else:
+            self.cids = cids
+            NC = len(cids)
+        
+        if include_stim:
+            self.stim = layers.NDNLayer(input_dims=[stim_dims, 1, 1, 1],
+                num_filters=NC,
+                NLtype=stim_act_func,
+                norm_type=0,
+                bias=False,
+                reg_vals = stim_reg_vals)
+        else:
+            self.stim = None
+
+
+        self.bias = nn.Parameter(torch.zeros(NC, dtype=torch.float32))
+        self.output_nl = getattr(nn, output_nonlinearity)()
+
+        ''' neuron drift '''
+        if num_tents > 1 and not tents_as_input:
+            self.drift = layers.NDNLayer(input_dims=[num_tents, 1, 1, 1],
+            num_filters=NC,
+            NLtype='lin',
+            norm_type=0,
+            bias=False,
+            reg_vals = readout_reg_vals)
+        else:
+            self.drift = None
+
+        ''' neuron gain '''
+        if include_gain:
+            self.gain_mu = layers.NDNLayer(input_dims=[1, 1, 1, NT], num_filters=num_latent, 
+                NLtype='lin',
+                bias=False,
+                reg_vals=reg_vals)
+
+            self.logvar_g = nn.Parameter(torch.ones(1, dtype=torch.float32))
+            
+            self.readout_gain = layers.NDNLayer(input_dims=[num_latent, 1, 1, 1],
+                num_filters=NC,
+                NLtype='lin',
+                norm_type=0,
+                bias=False,
+                reg_vals = readout_reg_vals)
+
+            self.readout_gain.weight_scale = 1.0
+        
+        ''' neuron offset '''
+        if include_offset:
+            self.offset_mu = layers.NDNLayer(input_dims=[1, 1, 1, NT], num_filters=num_latent, 
+                NLtype='lin',
+                bias=False,
+                reg_vals=reg_vals)
+            self.offset_mu.weight.data[:] = 0.0
+
+            self.logvar_h = nn.Parameter(torch.ones(1, dtype=torch.float32))
+            
+            self.readout_offset = layers.NDNLayer(input_dims=[num_latent, 1, 1, 1],
+                num_filters=NC,
+                NLtype='lin',
+                norm_type=0,
+                bias=False,
+                reg_vals = readout_reg_vals)
+
+            self.readout_offset.weight_scale = 1.0
+
+    def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
+        """
+        Will a single z be enough ti compute the expectation
+        for the loss??
+        :param mu: (Tensor) Mean of the latent Gaussian
+        :param logvar: (Tensor) Standard deviation of the latent Gaussian
+        :return:
+        """
+        if self.training:
+            # x = mu.new(*mu.shape).normal_()
+            x = torch.randn_like(mu)
+            std = torch.exp(0.5 * logvar)
+            x = x * std + mu
+        else:
+            x = mu
+        # eps = torch.randn_like(std)
+        return x
+    
+    def forward(self, input):
+        
+        x = 0
+        if self.stim is not None:
+            x = x + self.stim(input['stim'])
+
+        if hasattr(self, 'gain_mu'):
+            zg = self.reparameterize(self.gain_mu.weight[input['indices'],:], self.logvar_g)
+            
+            g = self.readout_gain(zg)
+            x = x * (1 + g)
+        
+        if hasattr(self, 'offset_mu'):
+            zh = self.reparameterize(self.offset_mu.weight[input['indices'],:], self.logvar_h)
+            
+            h = self.readout_offset(zh)
+            x = x + h
+
+        if self.drift is not None:
+            x = x + self.drift(input['tents'])
+
+        x = x + self.bias
+        x = self.output_nl(x)
+
+        return x
+
+
 class SharedGain(Encoder):
 
     def __init__(self, stim_dims,
@@ -112,6 +260,7 @@ class SharedGain(Encoder):
             stim_act_func='lin',
             stim_reg_vals={'l2':0.0},
             reg_vals={'l2':0.001},
+            latent_noise=True,
             act_func='lin'):
         
         super().__init__()
@@ -124,7 +273,7 @@ class SharedGain(Encoder):
             NC = len(cids)
 
         self.stim_dims = stim_dims
-        self.name = 'LVM'
+        self.name = 'GAMAutoencoder'
 
         if include_stim:
             self.stim = layers.NDNLayer(input_dims=[stim_dims, 1, 1, 1],
@@ -139,6 +288,7 @@ class SharedGain(Encoder):
 
         self.bias = nn.Parameter(torch.zeros(NC, dtype=torch.float32))
         self.output_nl = getattr(nn, output_nonlinearity)()
+
 
         ''' neuron drift '''
         if num_tents > 1 and not tents_as_input:
@@ -176,6 +326,9 @@ class SharedGain(Encoder):
                 reg_vals = reg_vals)
             self.readout_gain.weight_scale = 1.0
 
+            if latent_noise:
+                self.logvar_g = nn.Parameter(torch.ones(num_latent, dtype=torch.float32))
+
         ''' latent variable offset'''
         if include_offset:
             self.latent_offset = layers.NDNLayer(input_dims=[latent_input_dims, 1, 1, 1],
@@ -194,6 +347,9 @@ class SharedGain(Encoder):
                 reg_vals = reg_vals)
             self.readout_offset.weight_scale = 1.0
 
+            if latent_noise:
+                self.logvar_g = nn.Parameter(torch.ones(num_latent, dtype=torch.float32))
+
     def forward(self, input):
         
         x = 0
@@ -209,11 +365,20 @@ class SharedGain(Encoder):
 
         if hasattr(self, 'latent_gain'):
             zg = self.latent_gain(robs)
+            if hasattr(self, 'logvar_g') and self.training:
+                std = torch.exp(0.5 * self.logvar_g)
+                eps = torch.randn_like(zg)
+                zg = eps * std + zg
+
             g = self.readout_gain(zg)
             x = x * self.relu(1 + g)
         
         if hasattr(self, 'latent_offset'):
             zh = self.latent_offset(robs)
+            if hasattr(self, 'logvar_h') and self.training:
+                std = torch.exp(0.5 * self.logvar_h)
+                eps = torch.randn_like(zh)
+                zh = eps * std + zh
             h = self.readout_offset(zh)
             x = x + h
 

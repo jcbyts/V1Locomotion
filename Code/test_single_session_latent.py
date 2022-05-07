@@ -31,51 +31,11 @@ NUM_WORKERS = int(os.cpu_count() / 2)
 fpath = '/mnt/Data/Datasets/HuklabTreadmill/preprocessed_for_model/'
 
 flist = os.listdir(fpath)
-
-isess = 1
-
-from fit_latents_session import get_data, get_dataloaders, eval_model
-from models import SharedGain, SharedLatentGain
-
-ntents = 10
-ds, dat = get_data(fpath, flist[isess], num_tents=ntents)
-
-train_dl, val_dl, indices = get_dataloaders(ds, batch_size=64, folds=5, use_dropout=True)
-
-#%%
+for i in range(len(flist)):
+    print('%d) %s' % (i, flist[i]))
 
 
-
-
-
-    
-
-
-
-# def fit_model(model, verbose=1):
-
-#     from torch.optim import AdamW, Adam
-#     from torch.optim.lr_scheduler import OneCycleLR
-#     from NDNT.training import Trainer, EarlyStopping
-
-#     optimizer = AdamW(model.parameters(), lr=1e-3, weight_decay=1e-5)
-#     scheduler = OneCycleLR(optimizer, max_lr=0.01,
-#         steps_per_epoch=len(train_dl), epochs=20000)
-
-#     earlystopping = EarlyStopping(patience=500, verbose=False)
-
-#     trainer = Trainer(model, optimizer,
-#             scheduler,
-#             device=ds.device,
-#             optimize_graph=True,
-#             max_epochs=20000,
-#             early_stopping=earlystopping,
-#             log_activations=False,
-#             scheduler_after='batch',
-#             scheduler_metric=None,
-#             verbose=verbose)
-
-#     trainer.fit(model, train_dl, val_dl, seed=1234)
+#%% 
 def fit_model(model, train_dl, val_dl,
     lr=1e-3, max_epochs=5,
     wd=0.01,
@@ -145,16 +105,6 @@ def fit_model(model, train_dl, val_dl,
             trainer.fit(model, train_dl, val_dl)
 
 
-
-#%% MATRIX FACTORIZATION
-sample = ds[:]
-NT, nstim = sample['stim'].shape
-NC = sample['robs'].shape[1]
-
-from models import Encoder
-from NDNT.modules import layers
-
-
 def censored_lstsq(A, B, M):
     """Solves least squares problem with missing data in B
     Note: uses a broadcasted solve for speed.
@@ -192,13 +142,18 @@ def cv_pca(data, rank, Mtrain=None, Mtest=None, p_holdout=0.2):
 
     # create masking matrix
     if Mtrain is None:
-        Mtrain = torch.rand(*data.shape) > p_holdout
+        Mtrain = torch.rand(*data.shape, device=data.device) > p_holdout
     
     if Mtest is None:
         Mtest = ~Mtrain
 
+    Mtrain = Mtrain.to(data.device)
+    Mtest = Mtest.to(data.device)
+
     # initialize U randomly
-    U = torch.randn(data.shape[0], rank)
+    U = torch.randn(data.shape[0], rank, device=data.device)
+
+    # return U, data, rank, Mtrain
     Vt = solver(U, data, Mtrain)
     resid = U@Vt - data
     mse0 = torch.mean(resid**2)
@@ -209,7 +164,7 @@ def cv_pca(data, rank, Mtrain=None, Mtest=None, p_holdout=0.2):
         U = solver(Vt.T, data.T, Mtrain.T).T
         resid = U@Vt - data
         mse = torch.mean(resid[Mtrain]**2)
-        print('%d) %.3f' %(itr, mse))
+        # print('%d) %.3f' %(itr, mse))
         if mse > (mse0 - tol):
             break
         mse0 = mse
@@ -222,10 +177,33 @@ def cv_pca(data, rank, Mtrain=None, Mtest=None, p_holdout=0.2):
     return U, Vt, train_err, test_err
 
 
+
+
+
+
+
+
+#%% LOAD DATA
+# isess +=1# 52
+isess = 6
+print(flist[isess])
+from fit_latents_session import get_data, get_dataloaders, eval_model
+from models import SharedGain, SharedLatentGain
+
+ntents = 10
+ds, dat = get_data(fpath, flist[isess], num_tents=ntents, normalize_robs=True, zthresh=5)
+
+train_dl, val_dl, indices = get_dataloaders(ds, batch_size=64, folds=5, use_dropout=True)
+
+sample = ds[:]
+NT, nstim = sample['stim'].shape
+NC = sample['robs'].shape[1]
+# U, data, rank, Mtrain = cv_pca(ds.covariates['robs'], rank=5, Mtrain=train_dl.dataset[:]['dfs']>0, Mtest=val_dl.dataset[:]['dfs']>0)
+##%% MATRIX FACTORIZATION
 train_err= []
 test_err = []
 for rnk in range(1, 25):
-    U, Vt, tre, te = cv_pca(ds.covariates['robs'].cpu(), rank=rnk, Mtrain=train_dl.dataset[:]['dfs'].cpu()>0, Mtest=val_dl.dataset[:]['dfs'].cpu()>0)
+    U, Vt, tre, te = cv_pca(ds.covariates['robs'], rank=rnk, Mtrain=train_dl.dataset[:]['dfs']>0, Mtest=val_dl.dataset[:]['dfs']>0)
     train_err.append((rnk, tre))
     test_err.append((rnk, te))
 
@@ -241,159 +219,44 @@ ax.legend()
 plt.ylim(0, 1)
 fig.tight_layout()
 
-#%%
+
+cids = np.arange(NC)
+rnk = 6
+_, sid = np.where(ds.covariates['stim'].cpu().numpy())
+inds = np.argsort(sid)
+sortit = False
+dfs = ds[:]['dfs'][:,cids]>0
+
+robs = ds.covariates['robs'][:,cids]*dfs
+if sortit:
+    robs = robs[inds,:]
+
+
+U, Vt, tre, te = cv_pca(robs, rank=rnk, Mtrain=train_dl.dataset[:]['dfs'][:,cids]>0, Mtest=val_dl.dataset[:]['dfs'][:,cids]>0)
+plt.figure(figsize=(8, 4.5))
+plt.imshow(robs.cpu().numpy().T, aspect='auto', interpolation='none')
+
+plt.figure(figsize=(8, 4.5))
+plt.imshow( (U@Vt).T.cpu().numpy(), aspect='auto', interpolation='none')
+
+
+plt.figure(figsize=(8, 4.5))
+rm = robs.cpu().numpy()*dfs.cpu().numpy()
+
+plt.imshow(robs.cpu().numpy().T - rm.T, aspect='auto', interpolation='none')
 
 #%%
+# filter the data using scipy convolve 2
+from scipy.ndimage import uniform_filter
+robs_smooth = uniform_filter(robs.cpu().numpy(), size=(10, 1), mode='constant')
+x = robs.cpu().numpy().T / robs_smooth.T
+plt.imshow(x, aspect='auto', interpolation='none')
+plt.colorbar()
 
-class MatrixFactorization(Encoder):
-    
-    def __init__(self,
-        Y,
-        rank,
-        norm=0,
-        NLtype='lin',
-        reg_vals_u=None,
-        pos=False,
-        bias=True,
-        reg_vals_v=None):
-
-        super().__init__()
-
-        self.NT, self.NC = Y.shape
-        self.cids = list(range(self.NC))
-        self.rank = rank
-        self.U = layers.NDNLayer(input_dims=[1, 1, 1, self.NT],
-            num_filters=self.rank,
-            norm=0,
-            NLtype=NLtype,
-            pos_constraint=pos,
-            reg_vals=reg_vals_u,
-            bias=False)
-
-        self.V = layers.NDNLayer(input_dims=[self.rank, 1, 1, 1],
-            num_filters=self.NC,
-            norm=norm,
-            NLtype=NLtype,
-            pos_constraint=pos,
-            reg_vals=reg_vals_v,
-            bias=bias)
-
-        self.logvar = torch.nn.Parameter(torch.tensor(0.0))
-
-    def compute_reg_loss(self):
-
-        rloss = self.U.compute_reg_loss()
-        rloss += self.V.compute_reg_loss()
-            
-        return rloss
-
-    def prepare_regularization(self, normalize_reg = False):
-
-        self.U.reg.normalize = normalize_reg
-        self.U.reg.build_reg_modules()
-
-        self.V.reg.normalize = normalize_reg
-        self.V.reg.build_reg_modules()
-
-    def forward(self, input):
-        u = self.U.weight[input['indices'],:]
-        if self.U.NL is not None:
-            u = self.U.NL(u)
-        if self.training:
-            eps = torch.randn_like(u)
-            u = u + eps * torch.exp(0.5 * self.logvar)
-
-        v = self.V.weight
-        if self.V.NL is not None:
-            v = self.V.NL(v)
-        return u@v + self.V.bias
+# plt.figure(figsize=(8, 4.5))
+# plt.plot(x.T)
 
 
-def fit_matrix_factorization(model, train_dl, steps=10, max_iter=10000, verbose=0, device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"), seed=1234):
-
-    from NDNT.training import Trainer, EarlyStopping, LBFGSTrainer
-    model.prepare_regularization()
-
-    optimizer = torch.optim.LBFGS(model.parameters(),
-            history_size=10,
-            max_iter=max_iter,
-            tolerance_change=1e-9,
-            line_search_fn=None,
-            tolerance_grad=1e-5)
-
-    trainer = LBFGSTrainer(
-            optimizer=optimizer,
-            device=device,
-            accumulate_grad_batches=len(train_dl),
-            max_epochs=1,
-            optimize_graph=True,
-            log_activations=False,
-            set_grad_to_none=False,
-            verbose=verbose)
-
-    for iter in range(steps):
-        model.U.weight.requires_grad = False
-        model.V.weight.requires_grad = True
-        trainer.fit(model, train_dl.dataset[:], seed=seed)
-
-        model.U.weight.requires_grad = True
-        model.V.weight.requires_grad = False
-        trainer.fit(model, train_dl.dataset[:], seed=seed)
-
-
-train_err= []
-test_err = []
-for rnk in range(15):
-    pca = MatrixFactorization(Y=ds.covariates['robs'], rank=rnk, norm=1,
-        NLtype='lin') #, reg_vals_u={'orth':0.0001}, reg_vals_v={'l2':0.0001})
-
-    pca.V.bias.data = ds.covariates['robs'].mean(dim=0)
-    pca.V.bias.requires_grad = False
-
-    fit_matrix_factorization(pca, train_dl, steps=2, max_iter=10000, verbose=2, device=device)
-    # fit_model(pca, train_dl, train_dl, use_lbfgs=False, verbose=1, max_epochs=10000, early_stopping_patience=50, lr=0.001, wd=0.0)
-
-    rhat = pca(ds[:]).detach().cpu()
-
-    # r2train = pca.loss(rhat, ds.covariates['robs'].cpu(), train_dl.dataset[:]['dfs'].cpu()).detach().cpu()
-    # r2test = pca.loss(rhat, ds.covariates['robs'].cpu(), val_dl.dataset[:]['dfs'].cpu()).detach().cpu()
-
-    r2train = rsquared(ds.covariates['robs'].cpu(), rhat, dfs=train_dl.dataset[:]['dfs'].cpu()).mean()
-    r2test = rsquared(ds.covariates['robs'].cpu(), rhat, dfs=val_dl.dataset[:]['dfs'].cpu()).mean()
-
-    train_err.append((rnk, r2train))
-    test_err.append((rnk, r2test))
-
-#%% make plot
-
-fig, ax = plt.subplots(1, 1, figsize=(4, 3.5))
-ax.plot(*list(zip(*train_err)), 'o-b', label='Train Data')
-ax.plot(*list(zip(*test_err)), 'o-r', label='Test Data')
-ax.set_ylabel('Mean Squared Error')
-ax.set_xlabel('Number of PCs')
-ax.set_title('PCA')
-ax.spines['top'].set_visible(False)
-ax.spines['right'].set_visible(False)
-ax.legend()
-plt.ylim(0, 1)
-fig.tight_layout()
-
-from fit_latents_session import rsquared
-plt.figure()
-# f = plt.imshow(pca.U.weight.detach().cpu().numpy(), Interpolation='none')
-f = plt.plot(pca.U.weight.detach().cpu().numpy())
-
-plt.figure()
-f = plt.imshow(pca.V.weight.detach().cpu().numpy(), interpolation='none')
-
-rhat = pca(ds[:]).detach().cpu()
-
-r2train = rsquared(ds.covariates['robs'].cpu(), rhat, dfs=train_dl.dataset[:]['dfs'].cpu())
-r2test = rsquared(ds.covariates['robs'].cpu(), rhat, dfs=val_dl.dataset[:]['dfs'].cpu())
-
-plt.figure()
-plt.plot(r2train, r2test, '.')
-plt.plot(plt.xlim(), plt.xlim())
 
 #%%
 
@@ -444,6 +307,7 @@ plt.plot(res1['r2test'])
 plt.ylim([-0.1,1])
 # %% fit affine model
 cids = np.where(np.logical_and(res1['r2test'] > res0['r2test'], res1['r2test'] > 0))[0]
+cids = np.where(res1['r2test'] > 0)[0]
 
 seed = 1234
 np.random.seed(seed)
@@ -505,7 +369,7 @@ mod3 = SharedLatentGain(nstim,
             output_nonlinearity='Identity',
             stim_act_func='lin',
             stim_reg_vals={'l2':0.01},
-            reg_vals={'d2t': .01},
+            reg_vals={'d2t': .1, 'l2': 0.001},
             readout_reg_vals={'l2': 1})
 
 
@@ -548,9 +412,11 @@ for itr in range(10):
 res3 = eval_model(mod3, ds, train_dl.dataset)
 
 plt.figure()
-
+ax = plt.subplot()
 plt.plot(res2['zgain'])
 plt.plot(res3['zgain'])
+ax2 = ax.twinx()
+plt.plot(ds.covariates['runningspeed'].cpu().numpy(), 'k')
 
 plt.figure()
 plt.plot(mod3.readout_gain.weight.detach().cpu().T)
@@ -564,37 +430,86 @@ plt.figure()
 plt.subplot(1,2,1)
 plt.plot(res1['r2test'][cids].cpu(), res2['r2test'].cpu(), 'o')
 plt.plot(plt.xlim(), plt.xlim(), 'k')
+plt.xlabel("Stim Model")
+plt.ylabel("Autoencoder Latent Model")
 plt.subplot(1,2,2)
 plt.plot(res1['r2test'][cids].cpu(), res3['r2test'].cpu(), 'o')
 plt.plot(plt.xlim(), plt.xlim(), 'k')
-# %%
-plt.figure()
-plt.plot(res0['r2test'], 'o')
-plt.plot(res1['r2test'], 'o')
-plt.plot(cids, res2['r2test'], 'o')
-plt.ylim([-0.1,1])
-# %%
+plt.xlabel("Stim Model")
+plt.ylabel("Fit Latent Model")
+# # %%
+# plt.figure()
+# plt.plot(res0['r2test'], 'o')
+# plt.plot(res1['r2test'], 'o')
+# plt.plot(cids, res2['r2test'], 'o')
+# plt.ylim([-0.1,1])
+
+##%% redo PCA on fit neurons
+train_err= []
+test_err = []
+for rnk in range(1, 25):
+    U, Vt, tre, te = cv_pca(ds.covariates['robs'][:,cids], rank=rnk, Mtrain=train_dl.dataset[:]['dfs'][:,cids]>0, Mtest=val_dl.dataset[:]['dfs'][:,cids]>0)
+    train_err.append((rnk, tre))
+    test_err.append((rnk, te))
+## %% Compare PCA to latent model
+fig, ax = plt.subplots(1, 1, figsize=(8, 4.5))
+ax.plot(*list(zip(*train_err)), 'o-b', label='PCA Train Data')
+ax.plot(*list(zip(*test_err)), 'o-r', label='PCA Test Data')
+ax.plot(1, res1['r2test'].mean(), 'o', label='Stim Model', color='k')
+ax.plot(1, res3['r2test'].mean(), 'o', label='1 Gain Latent Model', color='m')
+ax.axhline(res3['r2test'].mean(),color='m')
+# ax.plot(1, res2['r2test'].mean(), 'o', label='1 Gain Autoencoder Model', color='g')
+ax.set_ylabel('Var. Explained')
+ax.set_xlabel('Number of PCs')
+ax.set_title('PCA vs. 1D Shared Gain')
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.legend()
+plt.ylim(0, 1)
+fig.tight_layout()
+
+#%%
+cids = np.arange(NC)
+rnk = 1
+robs = ds.covariates['robs'][:,cids]
+dfs = ds[:]['dfs'][:,cids]>0
+U, Vt, tre, te = cv_pca(robs, rank=rnk, Mtrain=train_dl.dataset[:]['dfs'][:,cids]>0, Mtest=val_dl.dataset[:]['dfs'][:,cids]>0)
+plt.figure(figsize=(8, 4.5))
+plt.imshow(ds.covariates['robs'][:,cids].cpu().numpy().T, aspect='auto', interpolation='none')
+
+plt.figure(figsize=(8, 4.5))
+plt.imshow( (U@Vt).T.cpu().numpy(), aspect='auto', interpolation='none')
+
+
+plt.figure(figsize=(8, 4.5))
+rm = robs.cpu().numpy()*dfs.cpu().numpy()
+
+plt.imshow(robs.cpu().numpy().T - rm.T, aspect='auto', interpolation='none')
 
 
 # %%
-
-# %% Try fit session
-from fit_latents_session import fit_session
-apath = '/mnt/Data/Datasets/HuklabTreadmill/latent_modeling/'
-aname = 'marmoset_23.pkl'
-fname = aname.replace('.pkl', '.mat')
-
-print(aname)
-
-refit = True
-
-if refit:
-    a = fit_session(fpath, apath, fname, aname, ntents=5)
-
-# %%
-plt.figure()
-plt.plot(a['stimdrift']['r2test'], a['affine']['r2test'], 'o')
-plt.plot(plt.xlim(), plt.xlim(), 'k')
-plt.xlabel("Stimulus + drift")
-plt.ylabel("Affine")
-# %%
+##%% redo PCA on noise
+X = torch.randn(NT, NC)
+# X = robs
+train_err= []
+test_err = []
+for rnk in range(1, 25):
+    U, Vt, tre, te = cv_pca(X, rank=rnk)
+    train_err.append((rnk, tre))
+    test_err.append((rnk, te))
+## %% Compare PCA to latent model
+fig, ax = plt.subplots(1, 1, figsize=(8, 4.5))
+ax.plot(*list(zip(*train_err)), 'o-b', label='PCA Train Data')
+ax.plot(*list(zip(*test_err)), 'o-r', label='PCA Test Data')
+# ax.plot(1, res1['r2test'].mean(), 'o', label='Stim Model', color='k')
+# ax.plot(1, res3['r2test'].mean(), 'o', label='1 Gain Latent Model', color='m')
+# ax.axhline(res3['r2test'].mean(),color='m')
+# ax.plot(1, res2['r2test'].mean(), 'o', label='1 Gain Autoencoder Model', color='g')
+ax.set_ylabel('Var. Explained')
+ax.set_xlabel('Number of PCs')
+ax.set_title('PCA on noise')
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.legend()
+plt.ylim(-1, 1)
+fig.tight_layout()

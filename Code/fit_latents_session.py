@@ -43,8 +43,8 @@ def get_dataloaders(ds, folds=5, batch_size=64, use_dropout=False, seed=1234):
         p_holdout = 1/folds
 
         Mask = np.random.rand(NT, NC) > p_holdout
-        train_ds.covariates['dfs'] = torch.tensor(np.logical_and(train_ds.covariates['dfs'].cpu().numpy(), Mask), dtype=torch.float32)
-        val_ds.covariates['dfs'] = torch.tensor(np.logical_and(val_ds.covariates['dfs'].cpu().numpy(), ~Mask), dtype=torch.float32)
+        train_ds.covariates['dfs'] = torch.tensor(np.logical_and(train_ds.covariates['dfs'].cpu().numpy(), Mask), dtype=torch.float32, device=ds.device)
+        val_ds.covariates['dfs'] = torch.tensor(np.logical_and(val_ds.covariates['dfs'].cpu().numpy(), ~Mask), dtype=torch.float32, device=ds.device)
         train_inds = Mask
         val_inds = ~Mask
     
@@ -65,8 +65,10 @@ def rsquared(y, yhat, dfs=None):
     if dfs is None:
         dfs = torch.ones(y.shape, device=y.device)
     ybar = (y * dfs).sum(dim=0) / dfs.sum(dim=0)
-    sstot = torch.sum( ( y*dfs - ybar)**2, dim=0)
-    ssres = torch.sum( (y*dfs - yhat)**2, dim=0)
+    resids = y - yhat
+    residnull = y - ybar
+    sstot = torch.sum( residnull**2*dfs, dim=0)
+    ssres = torch.sum( resids**2*dfs, dim=0)
     r2 = 1 - ssres/sstot
 
     return r2.detach().cpu()
@@ -145,6 +147,7 @@ def fit_model(model, train_dl, val_dl,
 
 def get_data(fpath, fname, num_tents=10,
         normalize_robs=True,
+        zthresh=10,
         device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")):
     from datasets.utils import tent_basis_generate
 
@@ -177,7 +180,12 @@ def get_data(fpath, fname, num_tents=10,
     robs = dat['robs'][trial_ix,:].astype(np.float32)
     s = np.std(robs, axis=0)
     mu = np.mean(robs, axis=0)
-    dfs = np.abs( (robs - mu) / s) < 10 # filter out outliers
+    from scipy.ndimage import uniform_filter
+    robs_smooth = uniform_filter(robs, size=(10, 1), mode='constant')
+    x = robs / robs_smooth
+
+    dfs = x < zthresh
+    # dfs = np.abs( (robs - mu) / s) < zthresh # filter out outliers
     if normalize_robs:
         robs = ( (robs-mu) / s)
 
@@ -237,7 +245,7 @@ def eval_model(mod2, ds, val_ds):
     robs_ = sample['robs'].detach().cpu()
     rhat_ = mod2(sample).detach().cpu()
 
-    r2test = rsquared(robs_[:,mod2.cids], rhat_)
+    r2test = rsquared(robs_[:,mod2.cids], rhat_, sample['dfs'][:,mod2.cids].detach().cpu())
 
     return {'rhat': rhat, 'zgain': zg, 'zoffset': zh, 'zgainav': zgav, 'zoffsetav': zhav, 'r2test': r2test}
 
