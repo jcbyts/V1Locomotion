@@ -1,5 +1,6 @@
 #%% IMPORT
 import os, sys
+from click import style
 
 sys.path.insert(0, '/mnt/Data/Repos/')
 sys.path.append("../")
@@ -103,6 +104,8 @@ def fit_model(model, train_dl, val_dl,
                     verbose=verbose)
 
             trainer.fit(model, train_dl, val_dl)
+    
+    return trainer
 
 
 def censored_lstsq(A, B, M):
@@ -116,6 +119,8 @@ def censored_lstsq(A, B, M):
     Returns
     -------
     X (ndarray) : r x n matrix that minimizes norm(M*(AX - B))
+
+    based off code from: http://alexhwilliams.info/itsneuronalblog/2018/02/26/crossval/
     """
 
     if A.ndim == 1:
@@ -133,12 +138,35 @@ def censored_lstsq(A, B, M):
         return torch.squeeze(torch.linalg.solve(T, rhs), dim=-1).T
 
 
-def cv_pca(data, rank, Mtrain=None, Mtest=None, p_holdout=0.2):
-    """Fit PCA or NMF while holding out a fraction of the dataset.
-    """
-
+def pca_train(data, rank, Mtrain, max_iter):
+    
     # choose solver for alternating minimization
     solver = censored_lstsq
+
+    # initialize U randomly
+    U = torch.randn(data.shape[0], rank, device=data.device)
+
+    # return U, data, rank, Mtrain
+    Vt = solver(U, data, Mtrain)
+    resid = U@Vt - data
+    mse0 = torch.mean(resid**2)
+    tol = 1e-3
+    # fit pca/nmf
+    for itr in range(max_iter):
+        Vt = solver(U, data, Mtrain)
+        U = solver(Vt.T, data.T, Mtrain.T).T
+        resid = U@Vt - data
+        mse = torch.mean(resid[Mtrain]**2)
+        # print('%d) %.3f' %(itr, mse))
+        if mse > (mse0 - tol):
+            break
+        mse0 = mse
+
+    return mse, U, Vt
+
+def cv_pca(data, rank, Mtrain=None, Mtest=None, p_holdout=0.2, max_iter=10, replicates=5):
+    """Fit PCA while holding out a fraction of the dataset.
+    """
 
     # create masking matrix
     if Mtrain is None:
@@ -150,24 +178,19 @@ def cv_pca(data, rank, Mtrain=None, Mtest=None, p_holdout=0.2):
     Mtrain = Mtrain.to(data.device)
     Mtest = Mtest.to(data.device)
 
-    # initialize U randomly
-    U = torch.randn(data.shape[0], rank, device=data.device)
+    mses = []
+    Us = []
+    Vts = []
 
-    # return U, data, rank, Mtrain
-    Vt = solver(U, data, Mtrain)
-    resid = U@Vt - data
-    mse0 = torch.mean(resid**2)
-    tol = 1e-3
-    # fit pca/nmf
-    for itr in range(10):
-        Vt = solver(U, data, Mtrain)
-        U = solver(Vt.T, data.T, Mtrain.T).T
-        resid = U@Vt - data
-        mse = torch.mean(resid[Mtrain]**2)
-        # print('%d) %.3f' %(itr, mse))
-        if mse > (mse0 - tol):
-            break
-        mse0 = mse
+    for r in range(replicates):
+        mse, U, Vt = pca_train(data, rank, Mtrain, max_iter)
+        mses.append(mse.item())
+        Us.append(U)
+        Vts.append(Vt)
+    
+    id = np.argmin(np.asarray(mses))
+    U = Us[id]
+    Vt = Vts[id]
 
     # return result and test/train error
     resid = U@Vt - data
@@ -177,15 +200,10 @@ def cv_pca(data, rank, Mtrain=None, Mtest=None, p_holdout=0.2):
     return U, Vt, train_err, test_err
 
 
-
-
-
-
-
-
 #%% LOAD DATA
 # isess +=1# 52
-isess = 6
+isess = 18
+# isess = 6#48
 print(flist[isess])
 from fit_latents_session import get_data, get_dataloaders, eval_model
 from models import SharedGain, SharedLatentGain
@@ -197,7 +215,9 @@ train_dl, val_dl, indices = get_dataloaders(ds, batch_size=64, folds=5, use_drop
 
 sample = ds[:]
 NT, nstim = sample['stim'].shape
+
 NC = sample['robs'].shape[1]
+print("%d Trials n % d Neurons" % (NT, NC))
 # U, data, rank, Mtrain = cv_pca(ds.covariates['robs'], rank=5, Mtrain=train_dl.dataset[:]['dfs']>0, Mtest=val_dl.dataset[:]['dfs']>0)
 ##%% MATRIX FACTORIZATION
 train_err= []
@@ -206,6 +226,8 @@ for rnk in range(1, 25):
     U, Vt, tre, te = cv_pca(ds.covariates['robs'], rank=rnk, Mtrain=train_dl.dataset[:]['dfs']>0, Mtest=val_dl.dataset[:]['dfs']>0)
     train_err.append((rnk, tre))
     test_err.append((rnk, te))
+
+figs = []
 
 fig, ax = plt.subplots(1, 1, figsize=(4, 3.5))
 ax.plot(*list(zip(*train_err)), 'o-b', label='Train Data')
@@ -218,7 +240,7 @@ ax.spines['right'].set_visible(False)
 ax.legend()
 plt.ylim(0, 1)
 fig.tight_layout()
-
+figs.append(fig)
 
 cids = np.arange(NC)
 rnk = 6
@@ -233,30 +255,28 @@ if sortit:
 
 
 U, Vt, tre, te = cv_pca(robs, rank=rnk, Mtrain=train_dl.dataset[:]['dfs'][:,cids]>0, Mtest=val_dl.dataset[:]['dfs'][:,cids]>0)
-plt.figure(figsize=(8, 4.5))
+figs.append(plt.figure(figsize=(8, 4.5)))
 plt.imshow(robs.cpu().numpy().T, aspect='auto', interpolation='none')
 
-plt.figure(figsize=(8, 4.5))
+figs.append(plt.figure(figsize=(8, 4.5)))
 plt.imshow( (U@Vt).T.cpu().numpy(), aspect='auto', interpolation='none')
 
 
-plt.figure(figsize=(8, 4.5))
-rm = robs.cpu().numpy()*dfs.cpu().numpy()
-
-plt.imshow(robs.cpu().numpy().T - rm.T, aspect='auto', interpolation='none')
-
-#%%
-# filter the data using scipy convolve 2
-from scipy.ndimage import uniform_filter
-robs_smooth = uniform_filter(robs.cpu().numpy(), size=(10, 1), mode='constant')
-x = robs.cpu().numpy().T / robs_smooth.T
-plt.imshow(x, aspect='auto', interpolation='none')
-plt.colorbar()
-
-# plt.figure(figsize=(8, 4.5))
-# plt.plot(x.T)
+figs.append(plt.figure(figsize=(8, 4.5)))
+# rm = robs.cpu().numpy()*dfs.cpu().numpy()
+rm = (U@Vt).T.cpu().numpy()
+plt.imshow(robs.cpu().numpy().T - rm, aspect='auto', interpolation='none')
 
 
+plt.figure()
+plt.plot( (dfs.sum(dim=0)/dfs.shape[0]).cpu().numpy(), 'o-')
+plt.axhline(1, color='k')
+plt.ylim((0,1.5))
+# import matplotlib.backends.backend_pdf
+# pdf = matplotlib.backends.backend_pdf.PdfPages("output.pdf")
+# for fig in figs: ## will open an empty extra figure :(
+#     pdf.savefig( fig )
+# pdf.close()
 
 #%%
 
@@ -272,11 +292,12 @@ mod0 = SharedGain(nstim,
             output_nonlinearity='Identity',
             latent_noise=True,
             stim_act_func='lin',
-            stim_reg_vals={'l2':0.0},
-            reg_vals={'l2':0.0},
+            stim_reg_vals={'l2':1},
+            reg_vals={'l2':0.01},
             act_func='lin')
 
-fit_model(mod0, train_dl, val_dl, use_lbfgs=True, verbose=2)
+mod0.bias.requires_grad = False
+t1 = fit_model(mod0, train_dl, val_dl, use_lbfgs=True, verbose=0)
 
 
 mod1 = SharedGain(nstim,
@@ -290,24 +311,37 @@ mod1 = SharedGain(nstim,
             tents_as_input=False,
             output_nonlinearity='Identity',
             stim_act_func='lin',
-            stim_reg_vals={'l2':0.00},
-            reg_vals={'l2':0.00},
+            stim_reg_vals={'l2':1},
+            reg_vals={'l2':0.01},
             act_func='lin')
 
 mod1.drift.weight.data = mod0.drift.weight.data.clone()
+mod1.bias.requires_grad = False
 
-fit_model(mod1, train_dl, val_dl, use_lbfgs=True, verbose=2)
+t2 = fit_model(mod1, train_dl, val_dl, use_lbfgs=True, verbose=0)
 
 res0 = eval_model(mod0, ds, val_dl.dataset)
 res1 = eval_model(mod1, ds, val_dl.dataset)
 
+cids = np.where(np.logical_and(res1['r2test'] > res0['r2test'], res1['r2test'] > 0))[0]
+
 plt.figure()
+plt.subplot(1,2,1)
 plt.plot(res0['r2test'])
 plt.plot(res1['r2test'])
+plt.axhline(0, color='k', linestyle='--')
 plt.ylim([-0.1,1])
+
+plt.subplot(1,2,2)
+plt.plot(res0['r2test'], res1['r2test'], 'o')
+plt.plot(res0['r2test'][cids], res1['r2test'][cids], 'o', label='included in gain model')
+plt.xlabel('Baseline model (Drift)')
+plt.ylabel("Stimulus")
+plt.plot(plt.xlim(), plt.xlim(), 'k--')
+
+print("%d / %d units included in gain model" % (len(cids), NC))
+
 # %% fit affine model
-cids = np.where(np.logical_and(res1['r2test'] > res0['r2test'], res1['r2test'] > 0))[0]
-cids = np.where(res1['r2test'] > 0)[0]
 
 seed = 1234
 np.random.seed(seed)
@@ -326,8 +360,8 @@ mod2 = SharedGain(nstim,
             tents_as_input=False,
             output_nonlinearity='Identity',
             stim_act_func='lin',
-            stim_reg_vals={'l2':0.01},
-            reg_vals={'l2': 1},
+            stim_reg_vals={'l2':.1},
+            reg_vals={'l2': .1},
             act_func='lin')
 
 
@@ -335,7 +369,8 @@ mod2.drift.weight.data = mod1.drift.weight.data[:,cids].clone()
 mod2.stim.weight.data = mod1.stim.weight.data[:,cids].clone()
 mod2.bias.data = mod1.bias.data[cids].clone()
 
-mod2.stim.weight.requires_grad = True
+mod2.stim.weight.requires_grad = False
+mod2.readout_gain.weight.data[:] = 0
 
 if hasattr(mod2, 'readout_offset'):
     mod2.readout_offset.weight_scale = 1.0
@@ -348,6 +383,7 @@ mod2.prepare_regularization()
 fit_model(mod2, train_dl, val_dl, use_lbfgs=True, verbose=2, use_warmup=True)
 
 res2 = eval_model(mod2, ds, val_dl.dataset)
+res1 = eval_model(mod1, ds, val_dl.dataset)
 plt.figure()
 plt.plot(res1['r2test'][cids].cpu(), res2['r2test'].cpu(), 'o')
 plt.plot(plt.xlim(), plt.xlim(), 'k')
@@ -356,60 +392,164 @@ plt.figure()
 plt.plot(res2['zgain'])
 
 #%% shared gain matrix factorization
-mod3 = SharedLatentGain(nstim,
-            NC=NC,
-            NT=len(ds),
-            cids=cids,
-            num_latent=1,
-            num_tents=ntents,
-            include_stim=True,
-            include_gain=True,
-            include_offset=False,
-            tents_as_input=False,
-            output_nonlinearity='Identity',
-            stim_act_func='lin',
-            stim_reg_vals={'l2':0.01},
-            reg_vals={'d2t': .1, 'l2': 0.001},
-            readout_reg_vals={'l2': 1})
+
+def fit_latents(model, mod1, train_dl, fit_sigmas=False, max_iter=10, seed=None):
+    data = train_dl.dataset[:]
+    init_gain = (data['robs'] * data['dfs']).sum(dim=1) / data['dfs'].sum(dim=1)
+    init_gain = init_gain.unsqueeze(1).detach().cpu()
+
+    if hasattr(model, 'gain_mu'):
+        model.readout_gain.weight.data[:] = .1*torch.rand(model.readout_gain.weight.shape)
+        model.gain_mu.weight.data[:] = init_gain.clone() #10*torch.randn(model.gain_mu.weight.shape)
+        model.gain_mu.weight.data[:] = torch.rand(model.gain_mu.weight.shape)
+        model.logvar_g.data[:] = 1
+        model.logvar_g.requires_grad = fit_sigmas
+# res2['zgain'].clone()  #    i
+    if hasattr(model, 'offset_mu'):
+        model.readout_offset.weight.data[:] = .1*torch.rand(model.readout_offset.weight.shape)
+        model.offset_mu.weight.data[:] = torch.randn(model.offset_mu.weight.shape)
+        model.logvar_h.data[:] = 1
+        model.logvar_h.requires_grad = fit_sigmas
 
 
-mod3.logvar_g.data[:] = 1
-mod3.logvar_g.requires_grad = False
-# mod3.gain_mu.weight.data[:] = res2['zgain']
-# mod3.gain_mu.weight.data[:] *= 10
+    # model.drift.weight.data = mod1.drift.weight.data[:,model.cids].clone()
+    model.stim.weight.data = mod1.stim.weight.data[:,model.cids].clone()
+    model.bias.data[:] = 0 # = mod1.bias.data[model.cids].clone()
 
-# mod3.gain_mu.weight_scale = 1.0
-# mod3.readout_gain.weight_scale = 1.0
-# mod3.readout_gain.weight.data[:] = 1
+    model.stim.weight.requires_grad = False
+    model.drift.weight.requires_grad = True
+    model.bias.requires_grad = False
 
-mod3.drift.weight.data = mod1.drift.weight.data[:,cids].clone()
-mod3.stim.weight.data = mod1.stim.weight.data[:,cids].clone()
-mod3.bias.data = mod1.bias.data[cids].clone()
+    tol = 1e-6
+    
+    t1 = fit_model(model, train_dl, train_dl, use_lbfgs=True, verbose=0, seed=seed)
 
-mod3.stim.weight.requires_grad = True
-mod3.drift.weight.requires_grad = True
-mod3.bias.requires_grad = True
-# fit_model(mod3, train_dl, val_dl, use_lbfgs=False, verbose=1, use_warmup=True, lr=.001, wd=0.01, max_epochs=20000, early_stopping_patience=100)
+    # l0 = np.inf
+    # for itr in range(max_iter):
+    #     if hasattr(model, 'gain_mu'):
+    #         model.logvar_g.data[:] = 1
+    #         model.logvar_g.requires_grad = fit_sigmas
+    #         model.gain_mu.weight.requires_grad = False
+    #         model.readout_gain.weight.requires_grad = True
 
-# fit_model(mod3, train_dl, val_dl, use_lbfgs=True, verbose=2, use_warmup=True, max_iter=1000)
+    #     if hasattr(model, 'offset_mu'):
+    #         model.logvar_h.data[:] = 1
+    #         model.logvar_h.requires_grad = fit_sigmas
+    #         model.offset_mu.weight.requires_grad = False
+    #         model.readout_offset.weight.requires_grad = True
+        
+    #     t1 = fit_model(model, train_dl, train_dl, use_lbfgs=True, verbose=0, seed=seed)
 
-# #%%
-for itr in range(10):
-    mod3.gain_mu.weight.requires_grad = True
-    mod3.readout_gain.weight.requires_grad = False
-    fit_model(mod3, train_dl, val_dl, use_lbfgs=True, verbose=2)
+    #     if hasattr(model, 'gain_mu'):
+    #         model.gain_mu.weight.requires_grad = False
+    #         model.readout_gain.weight.requires_grad = True
+        
+    #     if hasattr(model, 'offset_mu'):
+    #         model.offset_mu.weight.requires_grad = False
+    #         model.readout_offset.weight.requires_grad = True
+        
+    #     t2 = fit_model(model, train_dl, train_dl, use_lbfgs=True, verbose=0, seed=seed)
 
-    mod3.gain_mu.weight.requires_grad = False
-    mod3.readout_gain.weight.requires_grad = True
-    fit_model(mod3, train_dl, val_dl, use_lbfgs=True, verbose=2)
+    #     # model.stim.weight.requires_grad = True
+    #     # model.drift.weight.requires_grad = False
 
-# mod3.gain_mu.weight.requires_grad = True
+    #     # t3 = fit_model(model, train_dl, train_dl, use_lbfgs=True, verbose=0, seed=seed)
+    #     # model.stim.weight.requires_grad = False
+    #     # model.drift.weight.requires_grad = True
+    #     print('%d: %.3f, %.3f' % (itr, t1.val_loss_min, t2.val_loss_min))
 
-# fit_model(mod3, train_dl, val_dl, use_lbfgs=True, verbose=2, use_warmup=True, lr=.0001, wd=0.0)
-# plt.plot(mod3.gain_mu.weight.detach().cpu())
+    # # model.stim.weight.requires_grad = False
+    # # model.drift.weight.requires_grad = False
+    # # model.bias.requires_grad = False
+    # # if hasattr(model, 'gain_mu'):
+    # #     model.gain_mu.weight.requires_grad = False
+    # #     model.readout_gain.weight.requires_grad = True
+    
+    # # if hasattr(model, 'offset_mu'):
+    # #     model.offset_mu.weight.requires_grad = False
+    # #     model.readout_offset.weight.requires_grad = True
+    # # t3 = fit_model(model, train_dl, train_dl, use_lbfgs=True, verbose=0, seed=seed)
+
+    #     if itr > 2 and t2.val_loss_min - l0 < tol:
+    #         print("breaking because tolerance was hit")
+    #         break
+    #     else:
+    #         l0 = t2.val_loss_min
+    
+    return t1.val_loss_min, model
+
+
+#%% fit gain model
+
+seed = 1234
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+
+replicates = 2
+losses = []
+models = []
+for r in range(replicates):
+    mod3 = SharedLatentGain(nstim,
+                NC=NC,
+                NT=len(ds),
+                cids=cids,
+                num_latent=1,
+                num_tents=ntents,
+                include_stim=True,
+                include_gain=True,
+                include_offset=True,
+                tents_as_input=False,
+                output_nonlinearity='Identity',
+                stim_act_func='lin',
+                stim_reg_vals={'l2':1},
+                reg_vals={'d2t': .1, 'l2': 0},
+                readout_reg_vals={'l2': 0.01})
+
+    loss, model = fit_latents(mod3, mod1, train_dl, fit_sigmas=True, max_iter=10, seed=None)
+    losses.append(loss)
+    models.append(model)
+    print('Fit run %d: %.3f' % (r, loss))
+
+id = np.argmin(np.asarray(losses))
+mod3 = models[id]
+
+
+plt.figure(figsize=(10,4))
+ax = plt.subplot(1,1,1)
+ax.imshow(robs.T.detach().cpu(), aspect='auto', cmap='gray', interpolation='none')
+ax2 = ax.twinx()
+
+# plt.figure(figsize=(10,4))
+for id in range(replicates):
+    res3 = eval_model(models[id], ds, train_dl.dataset)
+    if hasattr(models[id], 'gain_mu'):
+        plt.plot(models[id].gain_mu.weight.detach().cpu(), 'r')
+    
+    if hasattr(models[id], 'offset_mu'):
+        plt.plot(models[id].offset_mu.weight.detach().cpu(), 'g')
+    plt.xlim(0, robs.shape[0])
+    # plt.plot(res3['zgain'])
+plt.show()
+
+
+id = np.argmin(np.asarray(losses))
+mod3 = models[id]
+
+res3 = eval_model(mod3, ds, val_dl.dataset)
+plt.figure()
+plt.subplot(1,2,1)
+plt.plot(res1['r2test'][cids].cpu(), res2['r2test'].cpu(), 'o')
+plt.plot(plt.xlim(), plt.xlim(), 'k')
+plt.xlabel("Stim Model")
+plt.ylabel("Autoencoder Latent Model")
+plt.subplot(1,2,2)
+plt.plot(res1['r2test'][cids].cpu(), res3['r2test'].cpu(), 'o')
+plt.plot(plt.xlim(), plt.xlim(), 'k')
+plt.xlabel("Stim Model")
+plt.ylabel("Fit Latent Model")
+
 #%%
-# res2 = eval_model(mod2, ds, val_dl.dataset)
-res3 = eval_model(mod3, ds, train_dl.dataset)
 
 plt.figure()
 ax = plt.subplot()
@@ -426,17 +566,9 @@ plt.figure()
 plt.plot(res2['zgain'].cpu(), res3['zgain'].cpu(), '.')
 plt.show()
 
-plt.figure()
-plt.subplot(1,2,1)
-plt.plot(res1['r2test'][cids].cpu(), res2['r2test'].cpu(), 'o')
-plt.plot(plt.xlim(), plt.xlim(), 'k')
-plt.xlabel("Stim Model")
-plt.ylabel("Autoencoder Latent Model")
-plt.subplot(1,2,2)
-plt.plot(res1['r2test'][cids].cpu(), res3['r2test'].cpu(), 'o')
-plt.plot(plt.xlim(), plt.xlim(), 'k')
-plt.xlabel("Stim Model")
-plt.ylabel("Fit Latent Model")
+
+
+#%%
 # # %%
 # plt.figure()
 # plt.plot(res0['r2test'], 'o')
@@ -456,7 +588,7 @@ fig, ax = plt.subplots(1, 1, figsize=(8, 4.5))
 ax.plot(*list(zip(*train_err)), 'o-b', label='PCA Train Data')
 ax.plot(*list(zip(*test_err)), 'o-r', label='PCA Test Data')
 ax.plot(1, res1['r2test'].mean(), 'o', label='Stim Model', color='k')
-ax.plot(1, res3['r2test'].mean(), 'o', label='1 Gain Latent Model', color='m')
+ax.plot(1, res2['r2test'].mean(), 'o', label='1 Gain Latent Model', color='m')
 ax.axhline(res3['r2test'].mean(),color='m')
 # ax.plot(1, res2['r2test'].mean(), 'o', label='1 Gain Autoencoder Model', color='g')
 ax.set_ylabel('Var. Explained')
@@ -467,6 +599,18 @@ ax.spines['right'].set_visible(False)
 ax.legend()
 plt.ylim(0, 1)
 fig.tight_layout()
+
+#%%
+w1 = mod1.stim.get_weights()[:,cids]
+w2 = mod2.stim.get_weights()
+
+N = w1.shape[1]
+sx = np.ceil(np.sqrt(N)).astype(int)
+sy = np.round(np.sqrt(N)).astype(int)
+for cc in range(N):
+    plt.subplot(sx, sy, cc + 1)
+    plt.plot(w1[:,cc], 'b')
+    plt.plot(w2[:,cc], 'r')
 
 #%%
 cids = np.arange(NC)
@@ -513,3 +657,4 @@ ax.spines['right'].set_visible(False)
 ax.legend()
 plt.ylim(-1, 1)
 fig.tight_layout()
+# %%
