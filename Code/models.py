@@ -37,9 +37,11 @@ class Encoder(nn.Module):
 
         if hasattr(self, 'gain_mu'):
             rloss += self.gain_mu.compute_reg_loss()
+            rloss += .01*(self.gain_mu.weight.mean()**2)
         
         if hasattr(self, 'offset_mu'):
             rloss += self.offset_mu.compute_reg_loss()
+            rloss += .01*(self.offset_mu.weight.mean()**2)
         
         if self.drift is not None:
             rloss += self.drift.compute_reg_loss()
@@ -131,7 +133,6 @@ class SharedLatentGain(Encoder):
 
         super().__init__()
 
-        NCTot = deepcopy(NC)
         if cids is None:
             self.cids = list(range(NC))
         else:
@@ -159,7 +160,7 @@ class SharedLatentGain(Encoder):
             NLtype='lin',
             norm_type=0,
             bias=False,
-            reg_vals = readout_reg_vals)
+            reg_vals = None)
         else:
             self.drift = None
 
