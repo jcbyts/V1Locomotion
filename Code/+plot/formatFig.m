@@ -17,7 +17,7 @@ function [] = formatFig(hFig, figSz, style, varargin)
 if ~exist('hFig', 'var')
     hFig = gcf;
 end
-figure(hFig);
+
 if ~exist('figSz', 'var') || isempty(figSz)
     figSz = get(hFig, 'PaperSize');
 end
@@ -25,6 +25,7 @@ if ~exist('style', 'var')
     style = 'default';
 end
 
+set(hFig, 'units', 'inches', 'Position', [0 0 figSz])
 % other options:
 % set(gca,'ticklength',[0.01 0.025])
 
@@ -114,14 +115,14 @@ p.parse(varargin{:})
 set(hFig, 'PaperSize', figSz, 'PaperPosition', [0 0 figSz]);
 
 % identify legends and turn off boxes:
-hl  = findobj(gcf,'Type','legend');
+hl  = findobj(hFig,'Type','legend');
 set(hl, 'Box', 'off')
 set(hl, 'FontSize', p.Results.FontSizeAxes);
 set(hl,'FontName', p.Results.FontName, 'color', 'none')
 
 % identify all subplots ('axes') and format:
 
-ha = findobj(gcf,'Type','axes');
+ha = findobj(hFig,'Type','axes');
     
 set(ha, 'Box', p.Results.Box)
 set(ha, 'TickDir', p.Results.TickDir)
@@ -130,6 +131,7 @@ set(ha, 'FontSize', p.Results.FontSizeAxes);
 % set(ha,'FontName', p.Results.FontName, 'color', 'none')
 
 for ii = 1:numel(ha)
+    set(ha(ii), 'Color', 'none')
     ht = get(ha(ii),'title');
     set(ht,'FontName', p.Results.FontName, 'fontweight', 'normal', 'FontSize', p.Results.FontSizeTitle);
     hx = get(ha(ii),'xlabel');
@@ -156,7 +158,7 @@ for ii = 1:numel(ha)
     end
 end
 
-htla = findobj(gcf, 'Type', 'TiledLayout');
+htla = findobj(hFig, 'Type', 'TiledLayout');
 if ~isempty(htla)
     htla.Title.FontSize = p.Results.FontSizeAxes;
     htla.XLabel.FontSize = p.Results.FontSizeAxes;
@@ -179,6 +181,6 @@ end
 
 % On some rare cases, the (default) opengl renderer will save bitmaps. 
 % This ensures we don't lose the vectorization:
-set(gcf, 'renderer', 'painters')
+set(hFig, 'renderer', 'painters')
 
 
