@@ -1,6 +1,7 @@
 #%% IMPORT
 from copy import deepcopy
 import os, sys
+import matplotlib
 
 sys.path.insert(0, '/mnt/Data/Repos/')
 sys.path.append("../")
@@ -40,22 +41,115 @@ isess = 15
 # print(flist[isess])
 fname = 'marmoset_%d.mat' %isess
 
-# isess = 32
-# fname = 'mouse_%d.mat' %isess
+isess = 18
+fname = 'mouse_%d.mat' %isess
 
 from fit_latents_session import get_data, get_dataloaders, eval_model
 from models import SharedGain, SharedLatentGain
 
-ntents = 3
-ds, dat = get_data(fpath, fname, num_tents=ntents, normalize_robs=True, zthresh=8)
+ntents = 5
+ds, dat = get_data(fpath, fname, num_tents=ntents, normalize_robs=1)
 
-train_dl, val_dl, test_dl, indices = get_dataloaders(ds, batch_size=64, folds=2, use_dropout=True)
+
+robs = ds.covariates['robs']
+dfs = ds.covariates['dfs']
+robs = robs *dfs
+robs = robs.detach().cpu().numpy()
+plt.figure(figsize=(10,5))
+plt.imshow(robs.T, aspect='auto', interpolation='none')
+plt.colorbar()
+
+
+robs = dat['robs']
+plt.figure(figsize=(10,5))
+# robs = robs * (robs < 10)
+plt.imshow(robs.T > 12, aspect='auto', interpolation='none')
+# plt.imshow(robs.T, aspect='auto', interpolation='none')
+plt.colorbar()
+
+# %matplotlib inline
+plt.figure(figsize=(10,5))
+r = (robs - robs.min(axis=0)) / (robs.max(axis=0) - robs.min(axis=0))
+# r = r * (r < .6)
+plt.imshow(r.T, aspect='auto', interpolation='none')
+plt.colorbar()
+
+plt.figure(figsize=(10,5))
+r = (robs - robs.mean(axis=0)) / (robs.std(axis=0))
+# r = r * (r < .6)
+plt.imshow(r.T, aspect='auto', interpolation='none')
+plt.colorbar()
+
+
+#%%
+%matplotlib ipympl
+plt.figure(figsize=(10,5))
+mu = np.mean(robs.astype('float32'), axis=0)
+mad = np.median(np.abs(robs-mu), axis=0)
+r = (robs - mu) / mad
+# r = (robs - robs.mean(axis=0)) / (robs.std(axis=0))
+# r =  r * (r < 12)
+plt.imshow(r.T, aspect='auto', interpolation='none')
+plt.colorbar()
+
+plt.figure()
+plt.hist(r.flatten(), bins=500)
+
+#%%
+plt.figure()
+plt.plot(np.mean(robs, axis=0), np.var(robs, axis=0), '.')
+plt.plot(np.mean(robs, axis=0), 10*np.mean(robs, axis=0))
+plt.xlabel('mean')
+plt.ylabel('var')
+
+plt.figure()
+f = plt.hist(np.var(robs, axis=0)/np.mean(robs, axis=0), bins=100)
+
+
+
+
+#%%
 
 sample = ds[:]
 NT, nstim = sample['stim'].shape
-
 NC = sample['robs'].shape[1]
 print("%d Trials n % d Neurons" % (NT, NC))
+
+# try to overfit data and throw out outliers
+mod1 = SharedGain(nstim,
+            NC=NC,
+            cids=None,
+            num_latent=1,
+            num_tents=ntents,
+            include_stim=True,
+            include_gain=False,
+            include_offset=False,
+            tents_as_input=False,
+            output_nonlinearity='Identity',
+            stim_act_func='lin',
+            stim_reg_vals={'l2':1},
+            reg_vals={'l2':0.01},
+            act_func='lin')
+
+from torch.utils.data import DataLoader
+dl = DataLoader(ds, batch_size=64)
+mod1.bias.requires_grad = False
+
+t0 = fit_model(mod1, dl, dl, use_lbfgs=True, verbose=0)
+
+mod1.to(device)
+rhat = mod1(sample)
+dfs = (rhat - sample['robs']).detach().cpu().abs() < 20
+ds.covariates['dfs'] = torch.tensor(dfs.numpy(), dtype=torch.float32).to(device)
+#%%
+dfs = (rhat - sample['robs']).detach().cpu().abs()
+plt.figure(figsize=(10,5))
+plt.imshow(dfs.T, aspect='auto', interpolation='none')
+plt.colorbar()
+
+#%%
+train_dl, val_dl, test_dl, indices = get_dataloaders(ds, batch_size=64, folds=4, use_dropout=True)
+
 # U, data, rank, Mtrain = cv_pca(ds.covariates['robs'], rank=5, Mtrain=train_dl.dataset[:]['dfs']>0, Mtest=val_dl.dataset[:]['dfs']>0)
 ##%% MATRIX FACTORIZATION
 train_err= []
@@ -112,7 +206,8 @@ te = 1 - torch.sum(resid**2*Mtest, dim=0) / torch.sum(total_err**2*Mtest, dim=0)
 cids0 = np.where(te.detach().cpu()>0)[0]
 print("Found %d /%d units with stable low-dimensional structure at rank %d" %(len(cids0), NC, rnk))
 
-#%% Fit baseline and stimulus model
+# Fit baseline and stimulus model
+# ntents = 1
 
 mod0 = SharedGain(nstim,
             NC=NC,
@@ -125,12 +220,16 @@ mod0 = SharedGain(nstim,
             tents_as_input=False,
             output_nonlinearity='Identity',
             latent_noise=True,
-            stim_act_func='lin',
+            stim_act_func='elu',
             stim_reg_vals={'l2':1},
             reg_vals={'l2':0.01},
             act_func='lin')
 
-mod0.bias.requires_grad = False
+if ntents < 2:
+    mod0.bias.requires_grad = True
+else:
+    mod0.bias.requires_grad = False
+
 t1 = fit_model(mod0, train_dl, val_dl, use_lbfgs=True, verbose=0)
 
 
@@ -144,13 +243,17 @@ mod1 = SharedGain(nstim,
             include_offset=False,
             tents_as_input=False,
             output_nonlinearity='Identity',
-            stim_act_func='lin',
+            stim_act_func='elu',
             stim_reg_vals={'l2':1},
             reg_vals={'l2':0.01},
             act_func='lin')
 
-mod1.drift.weight.data = mod0.drift.weight.data.clone()
-mod1.bias.requires_grad = False
+if ntents > 1:
+    mod1.drift.weight.data = mod0.drift.weight.data.clone()
+    mod1.bias.requires_grad = False
+else:
+    mod1.bias.data[:] = mod0.bias.data.clone()
+    mod1.bias.requires_grad = True
 
 t2 = fit_model(mod1, train_dl, val_dl, use_lbfgs=True, verbose=0)
 
@@ -175,11 +278,13 @@ plt.plot(res0['r2test'][cids], res1['r2test'][cids], 'o', label='included in gai
 plt.xlabel('Baseline model (Drift)')
 plt.ylabel("Stimulus")
 plt.plot(plt.xlim(), plt.xlim(), 'k--')
+plt.xlim(-.5, 1)
+plt.ylim(-.5, 1)
 
 print("%d / %d units included in gain model" % (len(cids), NC))
 
 # %% fit Autoencoder model first
-
+from fit_latents_session import fit_latents, fit_gain_model, model_rsquared
 seed = 1234
 np.random.seed(seed)
 torch.manual_seed(seed)
@@ -191,19 +296,23 @@ mod2 = SharedGain(nstim,
             cids=cids,
             num_latent=1,
             num_tents=ntents,
-            latent_noise=True,
+            latent_noise=False,
             include_stim=True,
             include_gain=False,
             include_offset=True,
             tents_as_input=False,
             output_nonlinearity='Identity',
-            stim_act_func='lin',
+            stim_act_func='elu',
             stim_reg_vals={'l2': 1},
             reg_vals={'l2': .001},
             act_func='lin')
 
 
-mod2.drift.weight.data = mod1.drift.weight.data[:,cids].clone()
+if ntents > 1:
+    mod2.drift.weight.data = mod1.drift.weight.data[:,cids].clone()
+else:
+    mod2.bias.requires_grad = True
+
 mod2.stim.weight.data = mod1.stim.weight.data[:,cids].clone()
 mod2.bias.data = mod1.bias.data[cids].clone()
 mod2.stim.weight.requires_grad = False
@@ -215,6 +324,11 @@ mod2.prepare_regularization()
 
 fit_model(mod2, train_dl, val_dl, use_lbfgs=True, verbose=0, use_warmup=True)
 
+seed = 1234
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+
 for i in range(1):
     """ Fit Affine Autoencoder"""
     mod3 = SharedGain(nstim,
@@ -222,27 +336,30 @@ for i in range(1):
                 cids=cids,
                 num_latent=1,
                 num_tents=ntents,
-                latent_noise=True,
+                latent_noise=False,
                 include_stim=True,
                 include_gain=True,
                 include_offset=True,
                 tents_as_input=False,
                 output_nonlinearity='Identity',
-                stim_act_func='lin',
+                stim_act_func='elu',
                 stim_reg_vals={'l2': 1},
                 reg_vals={'l2': .1},
                 act_func='lin')
 
-
-    mod3.drift.weight.data = mod1.drift.weight.data[:,cids].clone()
+    if ntents > 1:
+        mod3.drift.weight.data = mod1.drift.weight.data[:,cids].clone()
+        mod3.drift.weight.requires_grad = True
+        mod3.bias.requires_grad = False
+    else:
+        mod3.bias.requires_grad = True
     mod3.stim.weight.data = mod1.stim.weight.data[:,cids].clone()
     mod3.bias.data = mod1.bias.data[cids].clone()
     mod3.stim.weight.requires_grad = False
     mod3.readout_gain.weight.data[:] = 1
     mod3.readout_offset.weight.data[:] = 1
     mod3.readout_offset.weight_scale = 1.0
-    mod3.drift.weight.requires_grad = True
-    mod3.bias.requires_grad = False
+    
 
     mod3.prepare_regularization()
 
@@ -252,11 +369,16 @@ for i in range(1):
     plt.plot(res3['zgain'])
 
 
+mod3.to(device)
+r2 = model_rsquared(mod3, val_dl.dataset[:])
+mod3.readout_gain.weight.data[:,r2<0] = 0
+mod3.readout_offset.weight.data[:,r2<0] = 0
 
-#%%
 
-res2 = eval_model(mod2, ds, val_dl.dataset)
-res1 = eval_model(mod1, ds, val_dl.dataset)
+res2 = eval_model(mod2, ds, test_dl.dataset)
+res1 = eval_model(mod1, ds, test_dl.dataset)
+res3 = eval_model(mod3, ds, test_dl.dataset)
+
 plt.figure()
 plt.subplot(1,2,1)
 plt.plot(res1['r2test'][cids].cpu(), res2['r2test'].cpu(), '.')
@@ -274,36 +396,44 @@ plt.figure()
 plt.plot(res3['zgain'])
 plt.plot(res3['zoffset'])
 
+
+
 #%% shared gain matrix factorization
 
-from fit_latents_session import fit_latents, fit_gain_model, model_rsquared
-r2 = model_rsquared(mod2, val_dl.dataset[:])
-plt.plot(r2)
-r2 = model_rsquared(mod3, val_dl.dataset[:])
-mod3.readout_gain.weight.data[:,r2<0] = 0
-mod3.readout_offset.weight.data[:,r2<0] = 0
-plt.plot(r2)
-r2 = model_rsquared(mod3, val_dl.dataset[:])
-plt.plot(r2)
+# train_dl, val_dl, test_dl, indices = get_dataloaders(ds, batch_size=264, folds=4, use_dropout=True)
 
-mod4 = fit_gain_model(nstim, mod1, NC=NC, NT=len(ds),
-    cids=cids, ntents=ntents, train_dl=train_dl, val_dl=val_dl,
+
+mod3.to(device)
+r2 = model_rsquared(mod3, val_dl.dataset[:])
+# mod3.readout_gain.weight.data[:,r2<0] = 0
+# mod3.readout_offset.weight.data[:,r2<0] = 0
+
+
+mod4 = fit_gain_model(nstim, mod3, NC=NC, NT=len(ds),
+    num_latent=1,
+    cids=cids, ntents=ntents,
+    train_dl=train_dl, val_dl=val_dl,
     include_gain=True,
-    include_offset=True, d2ts=[.1])
+    include_offset=True,
+    verbose=0,
+    l2s=[.1, 1],
+    d2ts=[.001, .1, 1])
+
+# mod4.to(device)
 r24 = model_rsquared(mod4, val_dl.dataset[:])
 
-mod4.readout_gain.weight.data[:,r24<0] = 0
-mod4.readout_offset.weight.data[:,r24<0] = 0
+# mod4.readout_gain.weight.data[:,r24<0] = 0
+# mod4.readout_offset.weight.data[:,r24<0] = 0
 
-mod4.gain_mu.reg.vals
+# mod4.gain_mu.reg.vals
 
-#%%
+%matplotlib inline
 mod3.training= False
 mod4.training=False
 
 plt.figure()
-r2 = model_rsquared(mod1, val_dl.dataset[:])[mod4.cids]
-r24 = model_rsquared(mod4, val_dl.dataset[:])
+r2 = model_rsquared(mod1.to(device), val_dl.dataset[:])[mod4.cids]
+r24 = model_rsquared(mod4.to(device), val_dl.dataset[:])
 plt.plot(r2, r24, '.')
 plt.plot((0,1), (0,1), 'k')
 # plt.xlim((-.5, 1))
@@ -329,14 +459,19 @@ plt.plot(plt.xlim(), plt.xlim(), 'k')
 plt.xlabel('autoencoder')
 plt.ylabel('latent')
 
+#%%
+%matplotlib ipympl
 plt.figure()
-plt.plot(res3['zgain'])
+plt.plot(res3['zgain']/res3['zgain'].var())
 plt.plot(res4['zgain'], '-')
 
 
 plt.figure()
-plt.plot(res3['zoffset'])
+plt.plot(res3['zoffset']/res3['zoffset'].var())
 plt.plot(res4['zoffset'])
+
+plt.figure()
+plt.plot(dat['runningspeed'])
 
 #%%
 

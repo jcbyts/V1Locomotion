@@ -25,23 +25,27 @@ class Encoder(nn.Module):
         
         if hasattr(self, 'readout_gain'):
             rloss += self.readout_gain.compute_reg_loss()
+            rloss += .01*(self.relu(-self.readout_gain.weight)**2).mean()
 
         if hasattr(self, 'latent_gain'):
             rloss += self.latent_gain.compute_reg_loss()
 
         if hasattr(self, 'readout_offset'):
             rloss += self.readout_offset.compute_reg_loss()
+            # rloss += .01*(self.relu(-self.readout_offset.weight)**2).mean() # penalty for any negative loadings
         
         if hasattr(self, 'latent_offset'):
             rloss += self.latent_offset.compute_reg_loss()
 
         if hasattr(self, 'gain_mu'):
             rloss += self.gain_mu.compute_reg_loss()
-            rloss += .01*(self.gain_mu.weight.mean()**2)
+            rloss += .01*(self.gain_mu.weight.mean()**2) # penalize gain to be mean zero (really, 1 after offset)
+            rloss += .01*(self.gain_mu.weight.var(dim=0).mean()-1.0)**2 # penalize variance to be 1
         
         if hasattr(self, 'offset_mu'):
             rloss += self.offset_mu.compute_reg_loss()
-            rloss += .01*(self.offset_mu.weight.mean()**2)
+            rloss += .01*(self.offset_mu.weight.mean()**2) # mean 0
+            rloss += .01*(self.offset_mu.weight.var(dim=0).mean()-1.0)**2 # penalize variance to be 1
         
         if self.drift is not None:
             rloss += self.drift.compute_reg_loss()
@@ -99,7 +103,7 @@ class Encoder(nn.Module):
 
         return {'loss': loss + regularizers, 'train_loss': loss, 'reg_loss': regularizers}
 
-    def validation_step(self, batch, batch_idx=None):
+    def validation_step(self, batch, batch_idx=None, reduced=True):
         
         y = batch['robs'][:,self.cids]
 
@@ -127,6 +131,8 @@ class SharedLatentGain(Encoder):
             output_nonlinearity='Identity',
             stim_act_func='lin',
             stim_reg_vals={'l2':0.0},
+            gain_reg_vals={'l2': 0.0},
+            offset_reg_vals={'l2': 0.0},
             reg_vals={'l2':0.001},
             readout_reg_vals={'l2':0.001}):
 
@@ -143,6 +149,7 @@ class SharedLatentGain(Encoder):
             self.stim = layers.NDNLayer(input_dims=[stim_dims, 1, 1, 1],
                 num_filters=NC,
                 NLtype=stim_act_func,
+                pos_constraint=True,
                 norm_type=0,
                 bias=False,
                 reg_vals = stim_reg_vals)
@@ -151,7 +158,9 @@ class SharedLatentGain(Encoder):
 
 
         self.bias = nn.Parameter(torch.zeros(NC, dtype=torch.float32))
+        
         self.output_nl = getattr(nn, output_nonlinearity)()
+        
 
         ''' neuron drift '''
         if num_tents > 1 and not tents_as_input:
@@ -169,7 +178,8 @@ class SharedLatentGain(Encoder):
             self.gain_mu = layers.NDNLayer(input_dims=[1, 1, 1, NT], num_filters=num_latent, 
                 NLtype='lin',
                 bias=False,
-                reg_vals=reg_vals)
+                reg_vals=gain_reg_vals)
+            self.gain_mu.weight_scale = 1.0
 
             self.logvar_g = nn.Parameter(torch.ones(1, dtype=torch.float32))
             
@@ -187,8 +197,9 @@ class SharedLatentGain(Encoder):
             self.offset_mu = layers.NDNLayer(input_dims=[1, 1, 1, NT], num_filters=num_latent, 
                 NLtype='lin',
                 bias=False,
-                reg_vals=reg_vals)
+                reg_vals=offset_reg_vals)
             self.offset_mu.weight.data[:] = 0.0
+            self.offset_mu.weight_scale = 1.0
 
             self.logvar_h = nn.Parameter(torch.ones(1, dtype=torch.float32))
             
@@ -200,6 +211,7 @@ class SharedLatentGain(Encoder):
                 reg_vals = readout_reg_vals)
 
             self.readout_offset.weight_scale = 1.0
+
 
     def reparameterize(self, mu: torch.Tensor, logvar: torch.Tensor) -> torch.Tensor:
         """
@@ -229,7 +241,7 @@ class SharedLatentGain(Encoder):
             zg = self.reparameterize(self.gain_mu.weight[input['indices'],:], self.logvar_g)
             
             g = self.readout_gain(zg)
-            x = x * (1 + g)
+            x = x * self.relu(1 + g)
         
         if hasattr(self, 'offset_mu'):
             zh = self.reparameterize(self.offset_mu.weight[input['indices'],:], self.logvar_h)
@@ -266,7 +278,7 @@ class SharedGain(Encoder):
         
         super().__init__()
 
-        NCTot = deepcopy(NC)
+        
         if cids is None:
             self.cids = list(range(NC))
         else:
@@ -279,13 +291,15 @@ class SharedGain(Encoder):
         if include_stim:
             self.stim = layers.NDNLayer(input_dims=[stim_dims, 1, 1, 1],
                 num_filters=NC,
+                pos_constraint=True,
                 NLtype=stim_act_func,
                 norm_type=0,
                 bias=False,
                 reg_vals = stim_reg_vals)
         else:
             self.stim = None
-
+        
+        NCTot = deepcopy(NC)
 
         self.bias = nn.Parameter(torch.zeros(NC, dtype=torch.float32))
         self.output_nl = getattr(nn, output_nonlinearity)()
@@ -360,9 +374,9 @@ class SharedGain(Encoder):
         if self.tents_as_input:
             robs = input['tents']
         else:
-            robs = input['robs']
-            if 'dfs' in input:
-                robs = robs * input['dfs']
+            robs = input['robs'][:,self.cids]
+            if 'latentdfs' in input:
+                robs = robs * input['latentdfs'][:,self.cids]
 
         if hasattr(self, 'latent_gain'):
             zg = self.latent_gain(robs)
