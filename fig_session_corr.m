@@ -5,8 +5,7 @@ figdir = 'Figures/HuklabTreadmill/manuscript/';
 if ~exist('output', 'dir')
     mkdir('output')
 end
-% where the analyese will print to
-fid = fopen('output/fig_session_corr.txt', 'w');
+
 
 %% Basic summary of session running
 thresh = 3; % running threshold
@@ -36,6 +35,7 @@ for isubj = 1:nsubjs
     opts.save = true;
     opts.prewin = 0;
     opts.postwin = 0;
+    opts.spike_rate_thresh = .1;
 
     for isess = 1:nsess
         fprintf(1,'%d/%d session\n', isess, nsess);
@@ -49,7 +49,18 @@ trial_thresh = 300; % only include sessions with more than this number
 frac_run_thresh = [.1 .9];
 nboot = 500;
 
+exclude_calcarine_recordings = true;
+
 rhos = cell(nsubjs,1);
+
+% where the analyese will print to
+if exclude_calcarine_recordings
+    figappend = '_excludecalcarine';
+else
+    figappend = '';
+end
+
+fid = fopen(sprintf('output/fig_session_corr%s.txt', figappend), 'w');
 
 fprintf(fid, '*************\n*************\n\nRunning sessionwise analyses with running threshold of %d cm/s\n\n', thresh);
 fprintf(fid, 'Histograms of Spearman rank correlation between running and PC 1\n\n');
@@ -58,10 +69,13 @@ for isubj = 1:nsubjs
     subject = subjects{isubj};
     cmap = getcolormap(subject,false);
     npcs = 1;
+    
     nt = cellfun(@(x) numel(x.runningspeed), RunCorr.(subject));
     fracrun = cellfun(@(x) mean(x.runningspeed > thresh), RunCorr.(subject));
-    sessix = nt > trial_thresh & fracrun > frac_run_thresh(1) & fracrun < frac_run_thresh(2);
-    
+    sessix = find(nt > trial_thresh & fracrun > frac_run_thresh(1) & fracrun < frac_run_thresh(2));
+    if strcmp(subject, 'marmoset') && exclude_calcarine_recordings
+        sessix = setdiff(sessix, [13, 15]);
+    end
     
     for ipc = 1:npcs
         rho = cellfun(@(x) x.rho(ipc), RunCorr.(subject)(sessix));
@@ -101,14 +115,14 @@ end
 xlabel('Corr. w/ Running')
 if nsubjs==3
     plot.formatFig(gcf, [1.37 nsubjs*1.21], 'nature')
-    saveas(gcf,fullfile(figdir, 'runpc_corr_hist.pdf'))
+    saveas(gcf,fullfile(figdir, sprintf('runpc_corr_hist%s.pdf', figappend)))
 else
     plot.formatFig(gcf, [1.37 nsubjs*1.21], 'nature')
-    saveas(gcf,fullfile(figdir, 'runpc_corr_hist_marm.pdf'))
+    saveas(gcf,fullfile(figdir, sprintf('runpc_corr_hist_marm%s.pdf', figappend)))
 end
 
 
-%% histogram of fraction running
+% histogram of fraction running
 figure(1); clf
 
 % subjects = {'allen', 'gru', 'brie'};
@@ -120,8 +134,10 @@ for isubj = 1:nsubjs
     cmap = getcolormap(subject,false);
     nt = cellfun(@(x) numel(x.runningspeed), RunCorr.(subject));
     fracrun = cellfun(@(x) mean(x.runningspeed > thresh), RunCorr.(subject));
-    sessix = nt > trial_thresh & fracrun > frac_run_thresh(1) & fracrun < frac_run_thresh(2);
-
+    sessix = find(nt > trial_thresh & fracrun > frac_run_thresh(1) & fracrun < frac_run_thresh(2));
+    if strcmp(subject, 'marmoset') && exclude_calcarine_recordings
+        sessix = setdiff(sessix, [13, 15]);
+    end
            
     subplot(nsubjs, 1, isubj)
     histogram(fracrun, 'binEdges', linspace(0, 1, 20), 'FaceColor', cmap(2,:), 'EdgeColor', 'none', 'FaceAlpha', 1); hold on
@@ -131,20 +147,20 @@ for isubj = 1:nsubjs
     fracsrun{isubj} = fracrun;
 
     ci = bootci(nboot, @median, fracrun(sessix));
-    fprintf(fid,'%s, median (across sessions)=%02.3f, [%02.3f, %02.3f]\n', subject, median(rho),ci(1), ci(2));
+    fprintf(fid,'%s, median (across sessions)=%02.3f, [%02.3f, %02.3f]\n', subject, median(fracrun(sessix)),ci(1), ci(2));
 
     plot.offsetAxes(gca)
     ylabel('# sessions')
-    text(.2, .7*max(ylim), sprintf('%02.3f [%02.3f, %02.3f]', median(rho), ci(1), ci(2)), 'FontSize',6, 'FontName', 'Helvetica')
+    text(.2, .7*max(ylim), sprintf('%02.3f [%02.3f, %02.3f]', median(fracrun(sessix)), ci(1), ci(2)), 'FontSize',6, 'FontName', 'Helvetica')
 end
 
 xlabel('Fraction Running')
 if nsubjs==3
     plot.formatFig(gcf, [1.37 nsubjs*1.21], 'nature')
-    saveas(gcf,fullfile(figdir, 'frac_running_hist.pdf'))
+    saveas(gcf,fullfile(figdir, sprintf('frac_running_hist%s.pdf', figappend)))
 else
     plot.formatFig(gcf, [1.37 nsubjs*1.21], 'nature')
-    saveas(gcf,fullfile(figdir, 'frac_running_hist_marm.pdf'))
+    saveas(gcf,fullfile(figdir, sprintf('frac_running_hist_marm%s.pdf', figappend)))
 end
 
 [pval, ~, stats] = ranksum(fracsrun{:});
@@ -163,7 +179,7 @@ end
 
 
 
-%% histogram of running decoding
+% histogram of running decoding
 figure(1); clf
 r2_all = [];
 fracrun_all = [];
@@ -177,7 +193,10 @@ for isubj = 1:nsubjs
     cmap = getcolormap(subject,false);
     nt = cellfun(@(x) numel(x.runningspeed), RunCorr.(subject));
     fracrun = cellfun(@(x) mean(x.runningspeed > thresh), RunCorr.(subject));
-    sessix = nt > trial_thresh & fracrun > frac_run_thresh(1) & fracrun < frac_run_thresh(2);
+    sessix = find(nt > trial_thresh & fracrun > frac_run_thresh(1) & fracrun < frac_run_thresh(2));
+    if strcmp(subject, 'marmoset') && exclude_calcarine_recordings
+        sessix = setdiff(sessix, [13, 15]);
+    end
 
     r2 = cellfun(@(x) x.decoding_r2, RunCorr.(subject)(sessix));
             
@@ -198,17 +217,17 @@ for isubj = 1:nsubjs
 
     r2_all = [r2_all; r2(:)];
     fracrun_all = [fracrun_all; fracrun(sessix)];
-    subj_id = [subj_id; ones(sum(sessix),1)*isubj];
+    subj_id = [subj_id; ones(numel(sessix),1)*isubj];
 
 end
 
 xlabel('Decoding Performance (r^2)')
 if nsubjs==3
     plot.formatFig(gcf, [1.37 nsubjs*1.21], 'nature')
-    saveas(gcf,fullfile(figdir, 'rundecoding_hist.pdf'))
+    saveas(gcf,fullfile(figdir, sprintf('rundecoding_hist%s.pdf', figappend)))
 else
     plot.formatFig(gcf, [1.37 nsubjs*1.21], 'nature')
-    saveas(gcf,fullfile(figdir, 'rundecoding_hist_marm.pdf'))
+    saveas(gcf,fullfile(figdir, sprintf('rundecoding_hist_marm%s.pdf', figappend)))
 end
 
 
@@ -253,9 +272,9 @@ set(axtop, 'XTickLabel', [], 'XTick', get(ax, 'XTick'))
 set(axright, 'XTickLabel', [], 'XTick', get(ax, 'YTick'))
 
 if nsubjs==3
-    saveas(gcf,fullfile(figdir, 'runfrac_vs_decoding.pdf'))
+    saveas(gcf,fullfile(figdir, sprintf('runfrac_vs_decoding%s.pdf', figappend)))
 else
-    saveas(gcf,fullfile(figdir, 'runfrac_vs_decoding_marm.pdf'))
+    saveas(gcf,fullfile(figdir, sprintf('runfrac_vs_decoding_marm%s.pdf', figappend)))
 end
 
 [pval, ~, stats] = ranksum(r2_all(subj_id==1), r2_all(subj_id==2));
@@ -369,7 +388,7 @@ for isubj = 1:nsubjs
         xlabel('True (cm s^{-1})')
         ylabel('Decoded (cm s^{-1})')
         plot.formatFig(gcf, [1.2 1.2], 'nature')
-        saveas(gcf,fullfile(figdir, sprintf('rundecoding_%s_%d_%d.pdf', subject, i, isess)))
+        saveas(gcf,fullfile(figdir, sprintf('rundecoding_%s_rank%d_id%d.pdf', subject, i, isess)))
 
 
         iix = runspeed >= 0 & runhat >=0;
@@ -382,7 +401,7 @@ for isubj = 1:nsubjs
         h(2).Color = 'k';
         h(3).Color = 'k';
         plot.formatFig(gcf, [1.2 1.2], 'nature')
-        saveas(gcf,fullfile(figdir, sprintf('rundecodingqqplot_%s_%d_%d.pdf', subject, i, isess)))
+        saveas(gcf,fullfile(figdir, sprintf('rundecodingqqplot_%s_rank%d_id%d.pdf', subject, i, isess)))
 
     end
 end
