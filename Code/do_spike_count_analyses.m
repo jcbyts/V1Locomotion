@@ -19,7 +19,7 @@ end
 defopts = struct();
 defopts.winstart = 0.035;
 defopts.prewin = .2;
-defopts.postwin = .1;
+defopts.postwin = .05;
 defopts.binsize = .01;
 defopts.run_thresh = 3;
 defopts.debug = false;
@@ -92,6 +92,7 @@ Stat.bootTestMedianfrStim = nan(NC, 1);
 Stat.bootTestMeanfrStim = nan(NC, 1);
 Stat.bootTestMedianfrBase = nan(NC, 1);
 Stat.bootTestMeanfrBase = nan(NC, 1);
+Stat.sessid = cell(NC, 1);
 
 for cc = 1:NC
 
@@ -108,6 +109,7 @@ for cc = 1:NC
 
     unitix = D.spikeIds == cid;
     sessix = unique(D.sessNumSpikes(unitix));
+    Stat.sessid{cc} = sessix;
 
     gtix = find(ismember(D.sessNumGratings, sessix));
     gtix(isnan(D.GratingDirections(gtix))) = [];
@@ -117,7 +119,7 @@ for cc = 1:NC
 
     t0 = min(onsets) - 2*winsize;
     st = D.spikeTimes(unitix) - t0;
-    onsets = onsets - t0;
+    onsets = onsets - t0 + 0.05;
 
     st(st < min(onsets)) = [];
     sp = struct('st', st, 'clu', ones(numel(st),1));
@@ -130,7 +132,7 @@ for cc = 1:NC
     if (mean(R) < opts.spike_rate_thresh) || (mean(R==0)>.5) % skip if spike rate is less that 
         continue
     end
-
+    
     % --- Get binned spikes, stimulus, behavior
     [stimconds, robs, behavior, unitopts] = bin_ssunit(D, cid, 'win', [-opts.prewin opts.postwin], 'plot', false, 'binsize', opts.binsize);
     
@@ -144,7 +146,7 @@ for cc = 1:NC
     group = reshape(repmat(stimconds{1}, 1, size(brobs,2)), [], 1);
     Stat.pvis(cc,3) = anova1(brobs(:), group, 'off');
 
-    tix = unitopts.lags > 0 & unitopts.lags < (unitopts.lags(end) - opts.postwin);
+    tix = unitopts.lags > 0.05; % & unitopts.lags < (unitopts.lags(end) - opts.postwin);
     if opts.weighted_spike_count
         kern = mean(filtfilt(boxcar(5)/5, 1, robs'),2);
         kern = kern - mean(kern(unitopts.lags < 0));
@@ -187,7 +189,6 @@ for cc = 1:NC
             Xbig(:,:,iif,iis) = Dmat .* Fmat(:,iif) .* Smat(:,iis);
         end
     end
-
 
     runspeed = nanmean(behavior{1},2); %#ok<*NANMEAN> 
     
