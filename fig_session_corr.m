@@ -8,8 +8,11 @@ end
 
 
 %% Basic summary of session running
+trial_thresh = 300; % only include sessions with more than this number
+frac_run_thresh = [.1 .9];
+nboot = 500;
 thresh = 3; % running threshold
-
+exclude_calcarine_recordings = true;
 subjects = {'mouse', 'marmoset'};
 
 nsubjs = numel(subjects);
@@ -32,10 +35,11 @@ for isubj = 1:nsubjs
     
     RunCorr.(subject) = cell(nsess,1);
     opts = struct();
-    opts.save = true;
-    opts.prewin = 0;
-    opts.postwin = 0;
-    opts.spike_rate_thresh = .1;
+    opts.save = false;
+    opts.prewin = -0.05;
+    opts.postwin = 0.05;
+    opts.spike_rate_thresh = 1;
+    opts.normalization = 'zscore'; %'minmax';
 
     for isess = 1:nsess
         fprintf(1,'%d/%d session\n', isess, nsess);
@@ -43,13 +47,33 @@ for isubj = 1:nsubjs
     end
 end
 
-%% histogram of spike PC correlation with running
-figure(1); clf
-trial_thresh = 300; % only include sessions with more than this number
-frac_run_thresh = [.1 .9];
-nboot = 500;
+%% get null distribution of correlation using Ken Harris method
+NullDist = struct();
+for isubj = 1:nsubjs
+    subject = subjects{isubj};
+    nt = cellfun(@(x) numel(x.runningspeed), RunCorr.(subject));
+    fracrun = cellfun(@(x) mean(x.runningspeed > thresh), RunCorr.(subject));
+    sessix = find(nt > trial_thresh & fracrun > frac_run_thresh(1) & fracrun < frac_run_thresh(2));
+    if strcmp(subject, 'marmoset') && exclude_calcarine_recordings
+        sessix = setdiff(sessix, [13, 15]);
+    end
+    nsession = numel(sessix);
+    pairlist = nchoosek(1:nsession, 2);
+    npairs = size(pairlist,1);
+    NullDist.(subject) = nan(npairs,1);
+    for ipair = 1:npairs
+        x = RunCorr.(subject){pairlist(ipair,1)}.runningspeed;
+        y = RunCorr.(subject){pairlist(ipair,2)}.rpc(:,1);
+        nx = numel(x);
+        ny = numel(y);
+        n = min(nx, ny);
+        NullDist.(subject)(ipair) = corr(x(1:n), y(1:n), 'type', 'Spearman');
+    end
+end
 
-exclude_calcarine_recordings = true;
+%% histogram of spike PC correlation with running
+
+
 
 rhos = cell(nsubjs,1);
 
@@ -66,6 +90,8 @@ fprintf(fid, '*************\n*************\n\nRunning sessionwise analyses with 
 fprintf(fid, 'Histograms of Spearman rank correlation between running and PC 1\n\n');
 
 for isubj = 1:nsubjs
+    figure()
+
     subject = subjects{isubj};
     cmap = getcolormap(subject,false);
     npcs = 1;
@@ -79,24 +105,37 @@ for isubj = 1:nsubjs
     
     for ipc = 1:npcs
         rho = cellfun(@(x) x.rho(ipc), RunCorr.(subject)(sessix));
-        pval = cellfun(@(x) x.pval(ipc), RunCorr.(subject)(sessix));
+
+        % get pvalue by comparing to the null distribution
+        pval = arrayfun(@(x) mean(x > NullDist.(subject)), rho);
+        pval(pval > .5) = 1 - pval(pval > .5);
+        pval = pval * 2; % two-sided
+
+%         pval = cellfun(@(x) x.pval(ipc), RunCorr.(subject)(sessix));
+
         rhos{isubj} = rho;
 
-        subplot(nsubjs, npcs, (isubj-1)*npcs + ipc)
+        subplot(1, npcs, ipc)
 
         histogram(rho, 'binEdges', linspace(-1, 1, 30), 'FaceColor', cmap(2,:), 'EdgeColor', 'none', 'FaceAlpha', 1); hold on
         histogram(rho(pval < 0.05), 'binEdges', linspace(-1, 1, 30), 'FaceColor', cmap(6,:), 'EdgeColor', 'none', 'FaceAlpha', 1);
-        plot(median(rho), max(ylim)*1.1, 'v', 'Color', cmap(6,:), 'MarkerFaceColor', cmap(6,:), 'MarkerSize', 3)
+        plot(median(rho), max(ylim)*1.1, 'v', 'Color', cmap(6,:), 'MarkerFaceColor', cmap(6,:), 'MarkerSize', 2)
         xlim([-1 1])
         
         [p, ~, pstat] = signrank(rho);
         
         fprintf(fid, '%s, median (across sessions) =%02.3f, pval=%d (rank=%02.5f)\n\n', subject, median(rho),p,pstat.signedrank);
-
+        
         plot.offsetAxes(gca)
         ylabel('# sessions')
-        text(.2, .7*max(ylim), sprintf('%02.3f (p = %d, %d, %d)', median(rho), p, pstat.signedrank, numel(rho)), 'FontSize',6, 'FontName', 'Helvetica')
+%         text(.2, .7*max(ylim), sprintf('%02.3f (p = %d, %d, %d)', median(rho), p, pstat.signedrank, numel(rho)), 'FontSize',6, 'FontName', 'Helvetica')
     end
+    xlabel('Corr. w/ Running')
+    plot.formatFig(gcf, [2 1.7665], 'jnsci')
+    if p < 0.05
+        text(median(rho), 1.05*max(ylim), '*', 'FontSize', 8)
+    end
+    saveas(gcf,fullfile(figdir, sprintf('runpc_corr_hist_%s_%s.pdf', subject, figappend)))
 end
 
 [pval, ~, stats] = ranksum(rhos{1}, rhos{2});
@@ -111,16 +150,6 @@ else
     fprintf(fid,'Wilcoxon Rank Sum Test\n');
     fprintf(fid,'p=%d, ranksum=%d\n', pval, stats.ranksum );
 end
-
-xlabel('Corr. w/ Running')
-if nsubjs==3
-    plot.formatFig(gcf, [1.37 nsubjs*1.21], 'nature')
-    saveas(gcf,fullfile(figdir, sprintf('runpc_corr_hist%s.pdf', figappend)))
-else
-    plot.formatFig(gcf, [1.37 nsubjs*1.21], 'nature')
-    saveas(gcf,fullfile(figdir, sprintf('runpc_corr_hist_marm%s.pdf', figappend)))
-end
-
 
 % histogram of fraction running
 figure(1); clf
@@ -142,7 +171,7 @@ for isubj = 1:nsubjs
     subplot(nsubjs, 1, isubj)
     histogram(fracrun, 'binEdges', linspace(0, 1, 20), 'FaceColor', cmap(2,:), 'EdgeColor', 'none', 'FaceAlpha', 1); hold on
     histogram(fracrun(sessix), 'binEdges', linspace(0, 1, 20), 'FaceColor', cmap(6,:), 'EdgeColor', 'none', 'FaceAlpha', 1);
-    plot(median(fracrun(sessix)), max(ylim)*1.1, 'v', 'Color', cmap(6,:), 'MarkerFaceColor', cmap(6,:), 'MarkerSize', 3)
+    plot(median(fracrun(sessix)), max(ylim)*1.1, 'v', 'Color', cmap(6,:), 'MarkerFaceColor', cmap(6,:), 'MarkerSize', 2)
     xlim([0 1])
     fracsrun{isubj} = fracrun;
 
@@ -151,7 +180,7 @@ for isubj = 1:nsubjs
 
     plot.offsetAxes(gca)
     ylabel('# sessions')
-    text(.2, .7*max(ylim), sprintf('%02.3f [%02.3f, %02.3f]', median(fracrun(sessix)), ci(1), ci(2)), 'FontSize',6, 'FontName', 'Helvetica')
+%     text(.2, .7*max(ylim), sprintf('%02.3f [%02.3f, %02.3f]', median(fracrun(sessix)), ci(1), ci(2)), 'FontSize',6, 'FontName', 'Helvetica')
 end
 
 xlabel('Fraction Running')
@@ -194,15 +223,18 @@ for isubj = 1:nsubjs
     nt = cellfun(@(x) numel(x.runningspeed), RunCorr.(subject));
     fracrun = cellfun(@(x) mean(x.runningspeed > thresh), RunCorr.(subject));
     sessix = find(nt > trial_thresh & fracrun > frac_run_thresh(1) & fracrun < frac_run_thresh(2));
+    nsesstot = numel(nt);
     if strcmp(subject, 'marmoset') && exclude_calcarine_recordings
         sessix = setdiff(sessix, [13, 15]);
+        nsesstot = nsesstot - 2;
     end
+    fprintf(fid, '%s has %d / %d sessions included\n', subject, numel(sessix), nsesstot);
 
     r2 = cellfun(@(x) x.decoding_r2, RunCorr.(subject)(sessix));
             
     subplot(nsubjs, npcs, (isubj-1)*npcs + 1)
     histogram(r2, 'binEdges', plot_bins, 'FaceColor', cmap(6,:), 'EdgeColor', 'none', 'FaceAlpha', 1); hold on
-    plot(median(r2), max(ylim)*1.1, 'v', 'Color', cmap(6,:), 'MarkerFaceColor', cmap(6,:), 'MarkerSize', 3)
+    plot(median(r2), max(ylim)*1.1, 'v', 'Color', cmap(6,:), 'MarkerFaceColor', cmap(6,:), 'MarkerSize', 2)
     xlim(plot_bins([1 end]))
     
     [p, ~, pstat] = signrank(r2);
@@ -210,9 +242,9 @@ for isubj = 1:nsubjs
     
     plot.offsetAxes(gca)
     ylabel('# sessions')
-    text(.2, .7*max(ylim), sprintf('%02.3f (p = %d, %d, %d)', median(r2), p, pstat.signedrank, numel(r2)), 'FontSize',6, 'FontName', 'Helvetica')
+%     text(.2, .7*max(ylim), sprintf('%02.3f (p = %d, %d, %d)', median(r2), p, pstat.signedrank, numel(r2)), 'FontSize',6, 'FontName', 'Helvetica')
     if p < 0.05
-        text(median(r2), .95*max(ylim), '*', 'FontSize', 12)
+        text(median(r2), 1.05*max(ylim), '*', 'FontSize', 12)
     end
 
     r2_all = [r2_all; r2(:)];
@@ -222,13 +254,10 @@ for isubj = 1:nsubjs
 end
 
 xlabel('Decoding Performance (r^2)')
-if nsubjs==3
-    plot.formatFig(gcf, [1.37 nsubjs*1.21], 'nature')
-    saveas(gcf,fullfile(figdir, sprintf('rundecoding_hist%s.pdf', figappend)))
-else
-    plot.formatFig(gcf, [1.37 nsubjs*1.21], 'nature')
-    saveas(gcf,fullfile(figdir, sprintf('rundecoding_hist_marm%s.pdf', figappend)))
-end
+
+plot.formatFig(gcf, [1.37 nsubjs*1.21], 'nature')
+saveas(gcf,fullfile(figdir, sprintf('rundecoding_hist%s.pdf', figappend)))
+
 
 
 figure(10); clf
@@ -295,7 +324,7 @@ fclose(fid);
 %% plot individual sessions
 
 sort_by_running = false;
-sort_by_decoding = true;
+sort_by_decoding = false;
 
 for isubj = 1:nsubjs
     subject = subjects{isubj};
@@ -339,39 +368,52 @@ for isubj = 1:nsubjs
 
         figure(isubj*10 + i); clf
         axes('Position', [.1 .4 .8 .5])
-        imagesc(robs'); hold on
-        title(['$\rho:$ ' num2str(RunCorr.(subject){isess}.rho(1), 3), ',   $r^2:$' num2str(RunCorr.(subject){isess}.decoding_r2, 3)], 'interpreter', 'latex')
-        nt = max(nt, trial_thresh);
-        nt = nt + 5;
+%         robs = robs - min(robs())
+        zz = (robs - min(robs)) ./ range(robs);
+        imagesc(zz'); hold on
+%         title(['$\rho:$ ' num2str(RunCorr.(subject){isess}.rho(1), 3), ',   $r^2:$' num2str(RunCorr.(subject){isess}.decoding_r2, 3)], 'interpreter', 'latex')
+%         nt = max(nt, trial_thresh);
+        nt = min(nt, 800);
+%         nt = nt + 20;
 
         xlim([1 nt])
         axis off
         hold on
-        plot([1 1], [0 10], 'k', 'Linewidth', 1)
+        plot([nt nt], size(robs,2)-[0 10], 'k', 'Linewidth', 1)
+        text(nt+5, size(robs,2), sprintf('%d neurons', 10), 'FontSize',6, 'FontName', 'Helvetica', 'Rotation', 90);
         colormap(cmap)
 
         axes('Position', [.1 .25 .8 .15])
-        plot(rpc(:,1), 'Color', cmap(6,:));
+%         plot(runspeed, 'Color', repmat(.65, 1, 3)); hold on
+%         beta = lsqcurvefit(@(beta, x) beta(1)^2*x + beta(2), [max(runspeed) min(runspeed)], rpc(:,1), runspeed, [], [], struct('Display', 'off'));
+        xx = (rpc(:,1) - min(rpc(:,1))) / range(rpc(:,1));
+
+%         plot(rpc(:,1)*beta(1)^2 + beta(2), 'Color', cmap(6,:));
+        plot(xx * range(runspeed) + min(runspeed),'Color', cmap(6,:), 'Linewidth', .6);
         xlim([1 nt])
+        ylim(ylim().*[1 1.2])
+        text(10, .7*max(ylim), ['$\rho:$ ' num2str(RunCorr.(subject){isess}.rho(1), 3)], 'interpreter', 'latex')
         axis off
     
         axes('Position', [.1 .08 .8 .15])
-        plot(runspeed, 'Color', repmat(.1, 1, 3)); hold on
-        plot(runhat, 'Color', cmap(6,:))
+        plot(15+runspeed, 'Color', repmat(.65, 1, 3), 'Linewidth', .6); hold on
+%         plot(15+runhat, 'Color', cmap(6,:))
+%         text(10, .7*max(ylim),['$r^2:$' num2str(RunCorr.(subject){isess}.decoding_r2, 3)], 'interpreter', 'latex')
 
         hold on
         xlim([1 nt])
-        plot([1 51], -1*[1 1], 'k', 'Linewidth', 1)
-        text(5, -7, sprintf('%d trials', 50), 'FontSize',6, 'FontName', 'Helvetica')
+        plot([1 51], 0*[1 1], 'k', 'Linewidth', 1)
+        text(5, -20, sprintf('%d trials', 50), 'FontSize',6, 'FontName', 'Helvetica')
         mxsp = nanmax(runspeed)/2;
         mxsp = roundn(mxsp, 1);
 
-        plot([1 1]*(nt-1), [0 mxsp], 'k', 'Linewidth', 1)
-        text(nt, 0, sprintf('%d cm/s', mxsp), 'FontSize',6, 'FontName', 'Helvetica', 'Rotation', 90);
+        plot([1 1]*(nt), 10+[0 mxsp], 'k', 'Linewidth', 1)
+        text(nt+5, 0, sprintf('%d cm/s', mxsp), 'FontSize',6, 'FontName', 'Helvetica', 'Rotation', 90);
         axis off
         
         plot.formatFig(gcf, [3.93 1.2], 'nature')
-        saveas(gcf,fullfile(figdir, sprintf('runpc_%s_%d_%d.pdf', subject, i, isess)))
+        export_fig(gcf, fullfile(figdir, sprintf('runpc_%s_%d_%d.pdf', subject, i, isess)), '-pdf', '-transparent', '-preserve_size', '-nocrop')
+%         saveas(gcf,fullfile(figdir, sprintf('runpc_%s_%d_%d.pdf', subject, i, isess)))
 
 
         figure(isubj*100 + i); clf
@@ -391,20 +433,21 @@ for isubj = 1:nsubjs
         saveas(gcf,fullfile(figdir, sprintf('rundecoding_%s_rank%d_id%d.pdf', subject, i, isess)))
 
 
-        iix = runspeed >= 0 & runhat >=0;
-        clf
-        h = qqplot(runspeed(iix), runhat(iix));
-        h(1).MarkerEdgeColor = cmap(2,:);
-        h(1).Marker = 'o';
-        h(1).MarkerSize = 2;
-        h(1).MarkerFaceColor = cmap(6,:);
-        h(2).Color = 'k';
-        h(3).Color = 'k';
-        plot.formatFig(gcf, [1.2 1.2], 'nature')
-        saveas(gcf,fullfile(figdir, sprintf('rundecodingqqplot_%s_rank%d_id%d.pdf', subject, i, isess)))
+%         iix = runspeed >= 0 & runhat >=0;
+%         clf
+%         h = qqplot(runspeed(iix), runhat(iix));
+%         h(1).MarkerEdgeColor = cmap(2,:);
+%         h(1).Marker = 'o';
+%         h(1).MarkerSize = 2;
+%         h(1).MarkerFaceColor = cmap(6,:);
+%         h(2).Color = 'k';
+%         h(3).Color = 'k';
+%         plot.formatFig(gcf, [1.2 1.2], 'nature')
+%         saveas(gcf,fullfile(figdir, sprintf('rundecodingqqplot_%s_rank%d_id%d.pdf', subject, i, isess)))
 
     end
 end
+
 
 close all
 
