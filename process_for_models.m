@@ -28,8 +28,9 @@ for isubj = 1:nsubjs
     RunCorr.(subject) = cell(nsess,1);
     opts = struct();
     opts.save = true;
-    opts.prewin = 0;
-    opts.postwin = 0;
+    opts.prewin = -0.05;
+    opts.postwin = 0.05;
+    opts.spike_rate_thresh = 1;
 
     for isess = 1:nsess
         fprintf(1,'%d/%d session\n', isess, nsess);
