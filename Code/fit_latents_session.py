@@ -310,7 +310,7 @@ def get_data(fpath, fname, num_tents=10,
 
     # good = np.mean(dfs, axis=0) > .9 
     good = np.mean(dfs, axis=0) > .8
-    good = np.logical_and(good, mx > 1)
+    # good = np.logical_and(good, mx > 0)
     print("good units %d" %np.sum(good))
     robs = robs[:,good]
     dfs = dfs[:,good]
@@ -707,8 +707,8 @@ def fit_gain_model(nstim, mod1, NC=None, NT=None,
                             output_nonlinearity='Identity',
                             stim_act_func='lin',
                             stim_reg_vals={'l2':1},
-                            gain_reg_vals={'d2t': d2tg},
-                            offset_reg_vals={'d2t': d2th},
+                            gain_reg_vals={'d2t': d2tg, 'BC': {'d2t': 0}},
+                            offset_reg_vals={'d2t': d2th, 'BC': {'d2t': 0}},
                             readout_reg_vals={'l2':l2})
 
                 model = initialize_from_model(mod3, mod1, train_dl, fit_sigmas=False)
@@ -852,7 +852,7 @@ def fit_session(fpath,
     Step 0: check that the dataset has stable low-dimensional structure at >=4 dimensions
     
     '''
-    rnk = 4
+    rnk = 1
     data = ds.covariates['robs']
     Mtrain = train_dl.dataset[:]['dfs']>0
     Mtest = val_dl.dataset[:]['dfs']>0
@@ -933,7 +933,8 @@ def fit_session(fpath,
     # cids = np.where(np.logical_and(res1['r2test'] > res0['r2test'], res1['r2test'] > 0))[0]
     cids = np.where(res1['r2test'] > 0)[0]
     print("Found %d /%d units with significant stimulus + drift model" %(len(cids), len(res1['r2test'])))
-    
+    cids = np.union1d(cids0, cids)
+    print("Using %d total units for modeling" %len(cids))
     
     print('Fitting Autoencoder version')
     # seed = 1234
@@ -1028,14 +1029,14 @@ def fit_session(fpath,
     print('confirming model r2 = %.4f' %res2['r2test'].mean().item())
 
     print("Fitting Affine Model")
-    mod2 = fit_gain_model(nstim, mod20,
+    mod2 = fit_gain_model(nstim, mod1,
         NC=NC, NT=len(ds),
         num_latent=1,
         cids=cids, ntents=ntents,
         train_dl=train_dl, val_dl=val_dl,
         verbose=0,
         l2s=[0.001, 0.01, .1, 1],
-        d2ts=[0.0001, 0.001, .01, .1, 1],
+        d2ts=[0.00001], #[0.0001, 0.001, .01, .1, 1],
         include_gain=True,
         include_offset=True)
 
