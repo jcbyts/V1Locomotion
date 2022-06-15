@@ -39,7 +39,7 @@ class Encoder(nn.Module):
 
         if hasattr(self, 'gain_mu'):
             rloss += self.gain_mu.compute_reg_loss()
-            rloss += .01*(self.gain_mu.weight.mean()**2) # penalize gain to be mean zero (really, 1 after offset)
+            # rloss += .01*(self.gain_mu.weight.mean()**2) # penalize gain to be mean zero (really, 1 after offset)
             rloss += .01*(self.gain_mu.weight.var(dim=0).mean()-1.0)**2 # penalize variance to be 1
         
         if hasattr(self, 'offset_mu'):

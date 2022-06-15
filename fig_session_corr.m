@@ -8,7 +8,7 @@ end
 
 
 %% Basic summary of session running
-trial_thresh = 300; % only include sessions with more than this number
+trial_thresh = 250; % only include sessions with more than this number
 frac_run_thresh = [.1 .9];
 nboot = 500;
 thresh = 3; % running threshold
@@ -130,7 +130,7 @@ for isubj = 1:nsubjs
         ylabel('# sessions')
 %         text(.2, .7*max(ylim), sprintf('%02.3f (p = %d, %d, %d)', median(rho), p, pstat.signedrank, numel(rho)), 'FontSize',6, 'FontName', 'Helvetica')
     end
-    xlabel('Corr. w/ Running')
+    xlabel("Correlation w/ Running (Spearman's \rho)")
     plot.formatFig(gcf, [2 1.7665], 'jnsci')
     if p < 0.05
         text(median(rho), 1.05*max(ylim), '*', 'FontSize', 8)
@@ -383,7 +383,7 @@ for isubj = 1:nsubjs
         text(nt+5, size(robs,2), sprintf('%d neurons', 10), 'FontSize',6, 'FontName', 'Helvetica', 'Rotation', 90);
         colormap(cmap)
 
-        axes('Position', [.1 .25 .8 .15])
+        axes('Position', [.1 .2 .8 .2])
 %         plot(runspeed, 'Color', repmat(.65, 1, 3)); hold on
 %         beta = lsqcurvefit(@(beta, x) beta(1)^2*x + beta(2), [max(runspeed) min(runspeed)], rpc(:,1), runspeed, [], [], struct('Display', 'off'));
         xx = (rpc(:,1) - min(rpc(:,1))) / range(rpc(:,1));
@@ -391,8 +391,8 @@ for isubj = 1:nsubjs
 %         plot(rpc(:,1)*beta(1)^2 + beta(2), 'Color', cmap(6,:));
         plot(xx * range(runspeed) + min(runspeed),'Color', cmap(6,:), 'Linewidth', .6);
         xlim([1 nt])
-        ylim(ylim().*[1 1.2])
-        text(10, .7*max(ylim), ['$\rho:$ ' num2str(RunCorr.(subject){isess}.rho(1), 3)], 'interpreter', 'latex')
+        text(10, 1.05*max(runspeed), ['$\rho:$ ' num2str(RunCorr.(subject){isess}.rho(1), 3)], 'interpreter', 'latex')
+        ylim(ylim().*[1 1.25])
         axis off
     
         axes('Position', [.1 .08 .8 .15])

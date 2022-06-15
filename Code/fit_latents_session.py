@@ -440,6 +440,115 @@ def initialize_from_model(model, mod1, train_dl, fit_sigmas=False):
     
     return model
 
+def fit_autoencoder(model, train_dl, val_dl, fit_sigmas=False, min_iter=-1, max_iter=10, seed=None):
+    '''
+    fit latent variable model given an initialization
+    model: the model to be fit
+    mod1: the initialization model. If it is an autoencoder, use the autoencoder parameters for the initial condition
+    '''
+    
+    # data used for validation (sets stopping rule)
+    vdata = val_dl.dataset[:]
+    
+
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+
+    for dsub in vdata:
+        if vdata[dsub].device != device:
+            vdata[dsub] = vdata[dsub].to(device)
+        
+    
+    from copy import deepcopy
+    
+    tol = 1e-9
+    model.training = False
+    r2 = model_rsquared(model.to(device), vdata)
+    l0 = r2.mean().item()
+
+    # l0 = model.validation_step(vdata)['loss'].item()
+    model0 = deepcopy(model)
+    
+    print("Initial: %.4f" %l0)
+
+    if max_iter == 0:
+        return l0, model
+
+    # initialize fit by fixing stim, readout, fit gain / offset latents
+    model.stim.weight.requires_grad = False
+
+    if hasattr(model, 'latent_gain'):
+        model.latent_gain.weight.requires_grad = True
+        model.readout_gain.weight.requires_grad = True
+
+    if hasattr(model, 'latent_offset'):
+        model.latent_offset.weight.requires_grad = True
+        model.readout_offset.weight.requires_grad = True
+    
+    fit_model(model, train_dl, train_dl, use_lbfgs=True, verbose=0, seed=seed)
+
+    r2 = model_rsquared(model, vdata)
+    l1 = r2.mean().item()
+    
+    print('Fit latents: %.4f, %.4f' % (l0, l1))
+
+    # fit iteratively
+    for itr in range(max_iter):
+        
+        if itr > min_iter:
+            fit_sigmas = True
+            
+
+        # fit stimulus
+        if hasattr(model, 'latent_gain'):
+            model.latent_gain.weight.requires_grad = False
+            model.readout_gain.weight.requires_grad = False
+        
+        if hasattr(model, 'latent_offset'):
+            model.latent_offset.weight.requires_grad = False
+            model.readout_offset.weight.requires_grad = False
+        
+        model.stim.weight.requires_grad = True
+        fit_model(model, train_dl, train_dl, use_lbfgs=True, verbose=0, seed=seed)
+        r2 = model_rsquared(model, vdata)
+        l1 = r2.mean().item()
+
+        print('%d) fit stim: %.4f, %.4f' % (itr, l0, l1))
+        
+        if itr > min_iter and (l1 - l0) < tol:
+            print("breaking because tolerance was hit")
+            break
+        else:
+            l0 = l1
+            model0 = deepcopy(model)
+
+
+        # refit latents
+        model.stim.weight.requires_grad = False
+        
+        if hasattr(model, 'latent_gain'):
+            model.latent_gain.weight.requires_grad = True
+            model.readout_gain.weight.requires_grad = True
+
+        if hasattr(model, 'latent_offset'):
+            model.latent_offset.weight.requires_grad = True
+            model.readout_offset.weight.requires_grad = True
+        
+        fit_model(model, train_dl, train_dl, use_lbfgs=True, verbose=0, seed=seed)
+        r2 = model_rsquared(model, vdata)
+        l1 = r2.mean().item()
+
+        print('%d) fit latents: %.4f, %.4f' % (itr, l0, l1))
+
+        if itr > min_iter and (l1 - l0) < tol:
+            print("breaking because tolerance was hit")
+            break
+        else:
+            l0 = l1
+            model0 = deepcopy(model)
+    
+    return l0, model0
+
 
 def fit_latents(model, train_dl, val_dl, fit_sigmas=False, min_iter=-1, max_iter=10, seed=None, fix_readout_weights=False):
     '''
@@ -975,9 +1084,42 @@ def fit_session(fpath,
 
     mod200.prepare_regularization()
 
-    fit_model(mod200, train_dl, val_dl, use_lbfgs=True, verbose=0, use_warmup=True)
-    # l00 = np.nan
-    # ctr = 0
+    fit_autoencoder(mod200, train_dl, val_dl, fit_sigmas=False, min_iter=0, max_iter=10)
+
+    """ Fit Gain Autoencoder"""
+    mod201 = SharedGain(nstim,
+                NC=NC,
+                cids=cids,
+                num_latent=1,
+                num_tents=ntents,
+                latent_noise=False,
+                include_stim=True,
+                include_gain=True,
+                include_offset=False,
+                tents_as_input=False,
+                output_nonlinearity='Identity',
+                stim_act_func='lin',
+                stim_reg_vals={'l2': 1},
+                reg_vals={'l2': .001},
+                act_func='lin')
+
+
+    if ntents > 1:
+        mod201.drift.weight.data = mod1.drift.weight.data[:,cids].clone()
+        mod201.bias.requires_grad = False
+    else:
+        mod201.bias.requires_grad = True
+
+    mod201.stim.weight.data = mod1.stim.weight.data[:,cids].clone()
+    mod201.bias.data = mod1.bias.data[cids].clone()
+    mod201.stim.weight.requires_grad = False
+    mod201.readout_gain.weight_scale = 1.0
+    mod201.latent_gain.weight_scale = 1.0
+    mod201.readout_gain.weight.data[:] = 1
+
+    mod201.prepare_regularization()
+
+    fit_autoencoder(mod201, train_dl, val_dl, fit_sigmas=False, min_iter=0, max_iter=10)
     
 
     """ Fit Affine Autoencoder"""
@@ -1006,13 +1148,16 @@ def fit_session(fpath,
     mod20.stim.weight.data = mod1.stim.weight.data[:,cids].clone()
     mod20.bias.data = mod1.bias.data[cids].clone()
     mod20.stim.weight.requires_grad = False
-    mod20.readout_gain.weight.data[:] = 1
-    mod20.readout_offset.weight.data[:] = 1
+    mod20.readout_gain.weight.data[:] = mod201.readout_gain.weight.data.detach().clone()
+    mod20.readout_offset.weight.data[:] = mod200.readout_offset.weight.data.detach().clone()
+    mod20.latent_gain.weight.data[:] = mod201.latent_gain.weight.data.detach().clone()
+    mod20.latent_offset.weight.data[:] = mod200.latent_offset.weight.data.detach().clone()
     
-
     mod20.prepare_regularization()
 
-    fit_model(mod20, train_dl, val_dl, use_lbfgs=True, verbose=0, use_warmup=True)
+    # fit_model(mod20, train_dl, val_dl, use_lbfgs=True, verbose=0, use_warmup=True)
+    fit_autoencoder(mod20, train_dl, val_dl, fit_sigmas=False, min_iter=0, max_iter=10)
+
     mod20.to(device)
     r2 = model_rsquared(mod20, val_dl.dataset[:])
     mod20.readout_gain.weight.data[:,r2<0] = 0
@@ -1046,7 +1191,7 @@ def fit_session(fpath,
     Gain Only
     '''
     print("Fitting Gain Model")
-    mod3 = fit_gain_model(nstim, mod20, NC=NC, NT=len(ds),
+    mod3 = fit_gain_model(nstim, mod201, NC=NC, NT=len(ds),
         num_latent=1,
         cids=cids, ntents=ntents,
         train_dl=train_dl, val_dl=val_dl,
@@ -1097,6 +1242,18 @@ def fit_session(fpath,
         d2ts=[0.01],
         include_gain=False,
         include_offset=True)
+    
+    mod201 = fit_gain_model(nstim, mod201,
+        NC=NC, NT=len(ds),
+        num_latent=1,
+        max_iter=0,
+        cids=cids, ntents=ntents,
+        train_dl=train_dl, val_dl=val_dl,
+        verbose=0,
+        l2s=[0.01],
+        d2ts=[0.01],
+        include_gain=True,
+        include_offset=False)
 
     print("Done")
 
@@ -1143,6 +1300,11 @@ def fit_session(fpath,
     moddict200 = eval_model(mod200, ds, test_dl.dataset)
     moddict200['model'] = mod200
     das['offsetae'] = moddict200
+
+    ''' Autoencoder Gain'''
+    moddict201 = eval_model(mod201, ds, test_dl.dataset)
+    moddict201['model'] = mod201
+    das['gainae'] = moddict201
 
     ''' Autoencoder Affine'''
     moddict20 = eval_model(mod20, ds, test_dl.dataset)
