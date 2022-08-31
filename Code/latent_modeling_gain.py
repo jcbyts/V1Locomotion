@@ -782,7 +782,7 @@ ci2 = bootstrap((gainrange[subjid==0],), np.nanmedian, n_resamples=1000)
 fid.write('mouse modulates by {} [{}, {}]. marmoset by {} [{}, {}]'.format(m1, ci1.confidence_interval[0], ci1.confidence_interval[1], m2, ci2.confidence_interval[0], ci2.confidence_interval[1]))
 
 
-#%% get simple means for gain and offset
+#%% get simple means for gain
 plt.figure(figsize=(1,3))
 ax = plt.subplot()
 run_thresh = 3
@@ -826,6 +826,51 @@ plt.xlim(-1, 2)
 # plt.plot(zgmur-zgmus, 'o')
 plt.axhline(0, color='gray')
 plt.savefig('../Figures/latents_running_delta.pdf', bbox_inches="tight")
+
+#%% get variance for gain
+plt.figure(figsize=(1,3))
+ax = plt.subplot()
+run_thresh = 3
+zgmur = np.asarray([np.std(d['zg'][d['running']>run_thresh]) for d in dstats])
+zgmus = np.asarray([np.std(d['zg'][np.abs(d['running'])<run_thresh]) for d in dstats])
+
+ixmouse = ['mouse' in d['sess'] for d in dstats]
+x = ['g (mouse)']*sum(ixmouse) + ['g (marmoset)']*(len(ixmouse)-sum(ixmouse))
+
+y = list(zgmur-zgmus)
+sns.pointplot(x=x, y=y, join=False, palette=[clr_mouse, clr_marmoset, clr_mouse, clr_marmoset], estimator=np.mean, scale=.75)
+ax.set_xticklabels(['g (mouse)', 'g (marmoset)'], rotation=-45, ha='left', rotation_mode='anchor')
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.spines['bottom'].set_visible(False)
+plt.ylabel('Latent Variable Difference\n Running - Stationary (a.u.)')
+
+if fid is not None:
+    fid.write("\nAnalyzing average difference in the gain latent variable\n")
+
+from scipy.stats import ttest_1samp
+groups = ['g (mouse)', 'g (marmoset)']
+for i,group in enumerate(groups):
+    
+    ix = group == np.asarray(x)
+    d = np.asarray(y)[ix]
+    res = ttest_1samp(d, 0)
+    
+    ci = bootstrap((d,), np.mean, n_resamples=1000)
+    mn = np.mean(d)
+    if fid is not None:
+        fid.write("%s mean difference: %.3f [%.3f, %.3f]\n" %(group, mn, ci.confidence_interval[0], ci.confidence_interval[1]))
+        fid.write("%s ttest stat %.3f, p=%e\n" %(group, res[0], res[1]))
+
+    if res[1] < 0.05:
+        ax.text(i, np.mean(d) + .22 + 2*np.std(d)/np.sqrt(len(d)), '*', ha='center', size=14)
+        # plt.plot(i, np.mean(d) + .22 + 2*np.std(d)/np.sqrt(len(d)), '*k', markersize=10)
+
+plt.xlim(-1, 2)
+# plt.figure()
+# plt.plot(zgmur-zgmus, 'o')
+plt.axhline(0, color='gray')
+plt.savefig('../Figures/latents_running_std_delta.pdf', bbox_inches="tight")
 
 #%% same but in gain units
 plt.figure(figsize=(1,3))
@@ -1020,16 +1065,13 @@ plt.savefig('../Figures/example_gain_' + aname.replace('.pkl', '.pdf'), bbox_inc
 
 running = np.concatenate([d['running'] for d in dstats]).flatten()
 gainsubjid = np.concatenate([ np.ones(len(d['running']))*('mouse' in d['sess']) for d in dstats]).flatten()
-zglatent = np.concatenate([d['zg'] for d in dstats])
-zhlatent = np.concatenate([d['zh'] for d in dstats])
+zglatent = np.concatenate([d['zglatent'] for d in dstats])
 
-# congert g to gain
-zglatent = np.maximum(zglatent + 1, 0)
 
 plt.figure(figsize=(10,5))
-bins = np.linspace(0, 10, 50)
+bins = np.linspace(0, 15, 50)
 
-ax1 = plt.subplot(2,2,1)
+ax1 = plt.subplot(1,2,1)
 ix = np.logical_and(running > 3, gainsubjid==1)
 f = plt.hist(zglatent[ix], bins=bins, alpha=.5, density=True, label='running')
 ix = np.logical_and(np.abs(running) < 3, gainsubjid==1)
@@ -1038,7 +1080,7 @@ plt.xlabel('$z_{gain}$')
 ax1.patch.set_alpha(0.0)
 ax1.legend()
 
-ax2 = plt.subplot(2,2,2)
+ax2 = plt.subplot(1,2,2)
 ix = np.logical_and(running > 3, gainsubjid==0)
 f = plt.hist(zglatent[ix], bins=bins, alpha=.5, density=True)
 ix = np.logical_and(np.abs(running) < 3, gainsubjid==0)
@@ -1046,23 +1088,6 @@ f = plt.hist(zglatent[ix], bins=bins, alpha=.5, density=True)
 ax2.patch.set_alpha(0.0)
 plt.xlabel('$z_{gain}$')
 
-bins = np.linspace(-4, 4, 50)
-
-ax3 = plt.subplot(2,2,3)
-ix = np.logical_and(running > 3, gainsubjid==1)
-f = plt.hist(zhlatent[ix], bins=bins, alpha=.5, density=True, label='running')
-ix = np.logical_and(np.abs(running) < 3, gainsubjid==1)
-f = plt.hist(zhlatent[ix], bins=bins, alpha=.5, density=True, label='stationary')
-ax3.patch.set_alpha(0.0)
-plt.xlabel('$z_{h}$')
-
-ax4 = plt.subplot(2,2,4)
-ix = np.logical_and(running > 3, gainsubjid==0)
-f = plt.hist(zhlatent[ix], bins=bins, alpha=.5, density=True)
-ix = np.logical_and(np.abs(running) < 3, gainsubjid==0)
-f = plt.hist(zhlatent[ix], bins=bins, alpha=.5, density=True)
-ax4.patch.set_alpha(0.0)
-plt.xlabel('$z_{h}$')
 
 sns.despine()
 
