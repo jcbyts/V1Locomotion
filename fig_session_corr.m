@@ -6,7 +6,7 @@ if ~exist('output', 'dir')
     mkdir('output')
 end
 
-
+save_output_for_modeling = true;
 %% Basic summary of session running
 trial_thresh = 250; % only include sessions with more than this number
 frac_run_thresh = [.1 .9];
@@ -35,7 +35,7 @@ for isubj = 1:nsubjs
     
     RunCorr.(subject) = cell(nsess,1);
     opts = struct();
-    opts.save = false;
+    opts.save = save_output_for_modeling;
     opts.prewin = -0.05;
     opts.postwin = 0.05;
     opts.spike_rate_thresh = 1;
