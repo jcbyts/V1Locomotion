@@ -1,9 +1,45 @@
 import torch
 from torch import nn
+from torch.utils.data import Dataset
 
 from NDNT.modules import layers
 from NDNT.metrics.mse_loss import MseLoss_datafilter
 from copy import deepcopy
+
+
+def to_device(x, device='cpu'):
+    if torch.is_tensor(x):
+        return x.to(device) if x.device != device else x
+    elif isinstance(x, dict):
+        return {k: to_device(v, device=device) for k,v in x.items()}
+    elif isinstance(x, list):
+        return [to_device(v, device=device) for v in x]
+    return x
+
+class GenericDataset(Dataset):
+    '''
+    Generic Dataset can be used to create a quick pytorch dataset from a dictionary of tensors
+    
+    Inputs:
+        Data: Dictionary of tensors. Each key will be a covariate for the dataset.
+    '''
+    def __init__(self,
+        data):
+
+        self.covariates = data
+        self.requested_covariates = list(self.covariates.keys())
+
+    def to(self, device):
+        self.covariates = to_device(self.covariates, device)
+        return self
+        
+    def __len__(self):
+
+        return self.covariates['stim'].shape[0]
+
+    def __getitem__(self, index):
+        return {cov: self.covariates[cov][index,...] for cov in self.requested_covariates}
+
 
 class Encoder(nn.Module):
     '''

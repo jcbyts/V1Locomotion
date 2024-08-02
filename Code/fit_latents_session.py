@@ -16,12 +16,11 @@ import torch
 from torch import nn
 from scipy.io import loadmat
 
-from datasets import GenericDataset
 from NDNT.training import LBFGSTrainer
 
 from torch.utils.data import Subset, DataLoader
 
-from models import SharedGain, SharedLatentGain
+from models import SharedGain, SharedLatentGain, GenericDataset
 
 '''
 Model fitting procedure for the shared gain / offset model
