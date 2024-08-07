@@ -2,6 +2,9 @@
 
 This repo houses the analysis and figure code for [Liska, Rowley et al., 2022](https://elifesciences.org/reviewed-preprints/87736#s4). 
 
+## Shared Gain Model
+The shared gain model code contained in this repository relies on the [NDNT codebase](https://github.com/NeuroTheoryUMD/NDNT). NDNT has evolved substantially since this code was written. We will release a standalone repository soon.
+
 ## Getting the data
 
 If you want to reproduce the results and explore the shared-gain model, the processed data are available [here](https://figshare.com/articles/dataset/Marmoset_Visual_Cortex_Preprocessed_Treadmill_Data_Combined_Supersessions/26508136?file=48220309). All analyses work off of aggregate [supersessions](https://www.biorxiv.org/content/10.1101/2020.08.09.243279v2.abstract) so there is one file for each subject (all mice are combiend into one file).
